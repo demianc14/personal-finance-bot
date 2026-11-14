@@ -136,7 +136,7 @@ Limitación conocida (decidida el 12-nov): la conciliación es **uno a uno y sol
 - [ ] Mini App: lista "Sin registrar" con Registrar o Ignorar, por el flujo de confirmación de siempre.
 - [ ] `--exportar` (gastos) y `--exportar-bi` neutralizan las celdas de texto que empiezan con `=`, `+`, `-` o `@`, en una PR aparte de la ingesta (decisión en `docs/conciliacion.md`).
 - [ ] `--exportar-bi` escribe las vistas a CSV; dashboard de 3 páginas (Cobertura, Gasto real, Costo del banco y suscripciones) con datos sintéticos.
-- [ ] Medición: precisión y recall por regla sobre pares etiquetados a mano, con casos difíciles (mismo monto dos veces en la semana, pagos partidos, devoluciones).
+- [ ] Medición: precisión y recall por regla sobre los pares de `evals/pares_verdaderos.csv`. Las etiquetas ya están (53 filas, salen del generador, no de las reglas; los pagos partidos son fallo esperado del 1 a 1); falta `reglas.py` y el cálculo.
 - [ ] **Cierre:** vistas con tests, "Sin registrar" funcionando, dashboard en PDF y capturas, tabla de precisión y recall en `docs/conciliacion.md` y una línea en el README.
 
 ## Fase C. Evaluación (cerrada salvo la mejora 2)
