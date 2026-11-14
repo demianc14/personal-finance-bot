@@ -32,6 +32,10 @@ DEBEN_IGNORARSE = [
     "tests/fixtures/estados/marzo.xlsx",
     "tests/fixtures/estados/marzo.pbix",
     "tests/fixtures/estados/real/marzo.csv",
+    "tests/fixtures/estados/real/marzo.pdf",
+    "estado-marzo.pdf",
+    "docs/estado-marzo.pdf",
+    "scripts/estado-marzo.pdf",
     "powerbi/conciliacion.pbix",
     "powerbi/cobertura.csv",
     "exports/vistas.csv",
@@ -156,17 +160,45 @@ def test_ningun_commit_del_historial_versiono_un_archivo_ignorado() -> None:
 
 ESTADOS_SINTETICOS = "tests/fixtures/estados"
 PARES_VERDADEROS = "evals/pares_verdaderos.csv"
-DATOS = (".csv", ".tsv", ".xlsx", ".xls", ".pbix", ".parquet", ".db", ".sqlite", ".sqlite3")
+DATOS = (
+    ".csv",
+    ".tsv",
+    ".xlsx",
+    ".xls",
+    ".pbix",
+    ".pdf",
+    ".parquet",
+    ".db",
+    ".sqlite",
+    ".sqlite3",
+)
 """Formatos en los que podría colarse un estado de cuenta o un export con montos reales."""
 
 
-def test_los_estados_sinteticos_si_se_versionan() -> None:
+@pytest.mark.parametrize("nombre", ["marzo.csv", "pichincha.pdf"])
+def test_los_estados_sinteticos_si_se_versionan(nombre: str) -> None:
     result = subprocess.run(
-        ["git", "check-ignore", "--no-index", "-q", f"{ESTADOS_SINTETICOS}/marzo.csv"],
+        ["git", "check-ignore", "--no-index", "-q", f"{ESTADOS_SINTETICOS}/{nombre}"],
         cwd=ROOT,
         check=False,
     )
     assert result.returncode == 1
+
+
+def test_ningun_pdf_versionado_fuera_de_los_estados_sinteticos() -> None:
+    """Un estado de cuenta real llega en PDF: fuera de la carpeta sintética no se versiona ninguno.
+
+    Los de la carpeta los cubre el test byte a byte de abajo.
+    """
+    archivos = subprocess.run(
+        ["git", "ls-files", "-z"], cwd=ROOT, check=True, capture_output=True, text=True
+    ).stdout.split("\0")
+    colados = [
+        nombre
+        for nombre in filter(None, archivos)
+        if nombre.lower().endswith(".pdf") and Path(nombre).parent.as_posix() != ESTADOS_SINTETICOS
+    ]
+    assert not colados, f"PDF versionados fuera de {ESTADOS_SINTETICOS}/: {colados}"
 
 
 def test_lo_unico_tabular_versionado_son_los_estados_sinteticos() -> None:
