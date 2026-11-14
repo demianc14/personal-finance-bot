@@ -2,7 +2,7 @@
 
 [← README](../README.md) · [Decisiones](decisiones.md) · [Presupuesto](presupuesto.md) · [Calidad](calidad.md) · [Evaluación](evaluacion.md) · [Mini App](mini-app.md) · [n8n](../n8n/README.md)
 
-El bot sabe lo que le escribo; el banco sabe lo que de verdad salió. Esta parte cruza las dos fuentes. Hoy está hecha la **ingesta**: un estado de cuenta en CSV entra a la base completo y verificado, o no entra. El cruce contra los gastos (reglas, vistas SQL y Power BI) es lo siguiente en [`ROADMAP.md`](../ROADMAP.md).
+El bot sabe lo que le escribo; el banco sabe lo que de verdad salió. Esta parte cruza las dos fuentes. Hoy están hechas la **ingesta** (un estado de cuenta en CSV entra a la base completo y verificado, o no entra) y las **reglas de cruce** contra los gastos. Las vistas SQL, la lista "Sin registrar" y Power BI son lo siguiente en [`ROADMAP.md`](../ROADMAP.md).
 
 Todo lo de esta página se hizo con datos inventados. Ningún estado real entra al repo ni va a un LLM.
 
@@ -68,6 +68,72 @@ Es una entrada en [`config/bancos.yaml`](../config/bancos.yaml), no código: nom
 
 **Al guardar**, el estado y sus movimientos van en una sola transacción. El índice único del hash es la última defensa si dos importaciones corren a la vez.
 
+## Cruce con los gastos
+
+```bash
+family-expense-bot --conciliar 2026-03
+```
+
+Cruza los movimientos de ese mes con los gastos registrados y guarda cada par en `conciliaciones` con la regla que lo unió. Dice cuántos pares hizo cada regla, cuántos débitos quedaron sin conciliar y cuántos de ellos por empate. Correrlo dos veces no duplica nada, y un par anulado puede volver a cruzarse. Un movimiento sin par **no** se guarda como gasto: proponerlo es otra fase.
+
+Las reglas son deterministas, sin LLM, y van en orden. Cada una corre sobre lo que la anterior dejó libre:
+
+| Orden | Regla | Qué pide |
+|---|---|---|
+| 1 | `monto_y_fecha` | Monto exacto y la misma fecha |
+| 2 | `monto_3_dias` | Monto exacto y hasta 3 días de diferencia |
+| 3 | `monto_y_descripcion` | Monto exacto, hasta 10 días y descripción parecida |
+
+- **Solo cruzan los débitos.** Comisiones, intereses, pagos de tarjeta y todo lo que entra (una devolución) nunca se unen a un gasto.
+- **Descripción parecida:** dos palabras en común, o una sola si no está en `palabras_genericas` de [`config/bancos.yaml`](../config/bancos.yaml). Las palabras se comparan sin tildes ni mayúsculas, sin números y con cuatro letras o más. Del gasto cuentan la descripción, la subcategoría y el texto original.
+- **Cuando varios compiten** gana el más cercano en días y luego el que comparte más palabras, y el par solo se acepta si la elección es mutua. Si siguen empatados no se une ninguno, salvo los gemelos exactos (ver [decisiones](decisiones.md#reglas-de-cruce-14-nov-2026)).
+
+### Medición
+
+Las reglas se congelaron en el commit `c7694f0` y se midieron **una vez** contra `evals/pares_verdaderos.csv` (53 filas que salen del generador sintético, no de las reglas). La salida completa está en [`evals/corridas/cruce-c7694f0.txt`](../evals/corridas/cruce-c7694f0.txt).
+
+```bash
+python scripts/medir_cruce.py
+```
+
+Un par es correcto solo si el movimiento tenía exactamente ese gasto. El recall es sobre los 24 pares uno a uno que había que encontrar; los 3 pagos partidos se cuentan aparte.
+
+| Regla | Pares hechos | Correctos | Precisión | Recall (aporte) |
+|---|---|---|---|---|
+| `monto_y_fecha` | 13 | 13 | 100% | 13 de 24 (54%) |
+| `monto_3_dias` | 7 | 7 | 100% | 7 de 24 (29%) |
+| `monto_y_descripcion` | 0 | 0 | — | 0 de 24 (0%) |
+| Total | 20 | 20 | 100% | 20 de 24 (83%) |
+
+| categoria_caso | Filas | Pares a encontrar | Unidos | Correctos | Precisión | Recall |
+|---|---|---|---|---|---|---|
+| `exacto` | 12 | 12 | 11 | 11 | 100% | 92% |
+| `movimiento_sin_gasto` | 10 | 0 | 0 | 0 | — | — |
+| `fecha_desfasada` | 6 | 6 | 6 | 6 | 100% | 100% |
+| `mismo_monto_misma_semana` | 6 | 5 | 3 | 3 | 100% | 60% |
+| `comision` | 6 | 0 | 0 | 0 | — | — |
+| `fecha_fuera_de_ventana` | 1 | 1 | 0 | 0 | — | 0% |
+| `interes` | 2 | 0 | 0 | 0 | — | — |
+| `devolucion` | 2 | 0 | 0 | 0 | — | — |
+| `pago_partido` | 3 | 0 | 0 | 0 | — | — |
+| `gasto_sin_movimiento` | 5 | 0 | 0 | 0 | — | — |
+
+Quedaron 15 débitos sin conciliar, 2 de ellos por empate. Ningún par salió equivocado.
+
+**La precisión de la regla 3 no quedó medida:** no hizo ningún par en este set, así que no hay nada que contar. Solo se sabe que no unió nada de más.
+
+**Pagos partidos (fallo esperado, 3 filas):** los tres quedaron sin unir, que es el límite declarado del uno a uno. Son un gasto de 100.00 pagado en dos cargos (60.00 y 40.00) y un cargo de 100.00 que eran dos gastos.
+
+**Los 4 pares que faltaron:**
+
+| Movimiento | Gasto | Por qué no se unió |
+|---|---|---|
+| Marzo, línea 9: `PAGO TARJETA VISA`, 45.00 | "cuota de la tarjeta", mismo día | El movimiento es de tipo `pago` y solo cruzan los débitos. La verdad lo cuenta como `exacto`. |
+| Marzo, línea 16: `LIBRERIA SINTETICA`, 40.00 | "libros", 4 días antes | Fuera de ±3 días, y "libreria" y "libros" no son la misma palabra: la regla 3 compara palabras enteras. |
+| Mayo, líneas 21 y 22: `RESTAURANTE EL SINTETICO`, 12.00 (días 21 y 23) | Dos "almuerzo" de 12.00 (días 20 y 22) | Empate: el cargo del 21 queda a un día de los dos gastos, y el gasto del 22 a un día de los dos cargos. No se unió ninguno. |
+
+Las reglas no se tocaron después de ver estos resultados.
+
 ## Decisiones
 
 - **Línea totalmente vacía se salta; fila a medio llenar se rechaza.** La numeración de líneas se conserva, así que "línea 8" es la línea 8 del archivo en un editor. Una fila con solo separadores (`,,,`) cuenta como vacía: así exporta Excel una fila en blanco.
@@ -80,6 +146,11 @@ Es una entrada en [`config/bancos.yaml`](../config/bancos.yaml), no código: nom
 
 ## Límites conocidos
 
+- **El cruce es uno a uno.** Un cargo que son varios gastos, o un gasto pagado en dos cargos, queda sin conciliar.
+- **El pago de la tarjeta no cruza**, aunque esté registrado como gasto con el mismo monto y fecha.
+- **La descripción se compara por palabras enteras.** "Librería" y "libros" no coinciden, ni un comercio que el banco abrevia.
+- **Un empate no se resuelve mirando el conjunto.** Dos cargos y dos gastos del mismo monto en días alternados (gasto, cargo, gasto, cargo) quedan sin unir, aunque a ojo el orden sea claro.
+- **La regla 3 no tiene precisión medida**: el set sintético no le dio ningún par.
 - **Sin columna de saldo, solo se verifica el total.** Una fila perdida se nota porque el total no cuadra, pero no se sabe cuál fue. Dos errores que se compensan (+1 y −1 centavo) pasan sin que nada los delate: es el caso `errores_compensados_sin_saldo` de la tabla. Con columna de saldo, los dos se detectan en la línea exacta.
 - **Los avisos no quedan en la base.** Salen una vez, al importar. Después solo se pueden reconstruir comparando los saldos de dos estados seguidos.
 - **Una fila repetida suelta no se detecta por sí sola.** Si no es real, la delata el saldo.

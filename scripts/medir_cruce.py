@@ -69,8 +69,8 @@ def main() -> None:
     verdad = leer_pares(PARES)
     medicion = medir(verdad, hechos, [r.nombre for r in REGLAS])
     print(f"Base sintética: {gastos} gastos y {movimientos} movimientos; {len(verdad)} filas.\n")
-    print(tabla_reglas(medicion), "\n")
-    print(tabla_casos(medicion), "\n")
+    print(tabla_reglas(medicion) + "\n")
+    print(tabla_casos(medicion) + "\n")
     print(f"Débitos sin conciliar: {cruce.sin_conciliar}; por empate: {len(empatados)}.")
     for periodo, linea in empatados:
         print(f"  - empate: {periodo} línea {linea}")

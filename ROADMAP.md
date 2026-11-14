@@ -15,10 +15,12 @@ El repo cuenta una sola historia de producto: **captura verificada → conciliac
 - **G1, esquema (PR #22, rama `fase-g1-esquema`, rebaseada sobre `main` el 13-nov):** tablas `estados_cuenta`, `movimientos` y `conciliaciones` con sus restricciones, llaves foráneas activas en cada conexión y verificación al arrancar. `pytest` 616 pasan en la rama; `ruff check .`, `ruff format --check .` y `mypy` sin errores. Mergeada el 13-nov (3ad2863).
 - **G1, ingesta (PR #23, rama `fase-g1-ingesta`, 14-nov, sin mergear):** `config/bancos.yaml`, `conciliacion/` (`contrato.py`, `bancos.py`, `ingesta.py`, `verificacion.py`, `importar.py`), `--importar-estado` y `scripts/estado_sintetico.py` con 29 casos (8 entran, uno con aviso; 21 se rechazan). Solo CSV. `pytest` 814 pasan en la rama; `ruff check .`, `ruff format --check .` y `mypy` sin errores. Los saldos declarados son obligatorios siempre. Detalle, límites y la tabla de mensajes en `docs/conciliacion.md`.
 
+- **G2, reglas de cruce (rama `fase-g2-reglas`, 14-nov, sin mergear):** `conciliacion/reglas.py` con tres reglas en orden y con nombre, `--conciliar <AAAA-MM>` y `scripts/medir_cruce.py`. Congeladas en `c7694f0` y medidas una vez: 20 pares, 20 correctos (precisión 100 %), recall 20 de 24 (83 %); la regla 3 no hizo pares y su precisión no quedó medida. Detalle y los 4 pares que faltaron en `docs/conciliacion.md`. La rama trae también los pares verdaderos de la PR #24, que se mergeó a `fase-g1-ingesta` y no llegó a `main`.
+
 ### Qué sigue
 
 - Tarea 4: conciliación de estados de cuenta (Fase G, fases 0 a 2). Las tareas 1 a 3 están cerradas, salvo los enlaces de fuera del repo (tarea 1).
-- Dentro de la tarea 4, después de la ingesta: las reglas de cruce (`conciliacion/reglas.py`), `--conciliar` y las vistas SQL (G2). La entrada del banco real en `config/bancos.yaml` espera a G0.
+- Dentro de la tarea 4, después de las reglas de cruce: las vistas SQL, la lista "Sin registrar" y `--exportar-bi` (G2). La entrada del banco real en `config/bancos.yaml` espera a G0.
 
 ### Qué decide Demian
 
@@ -26,6 +28,9 @@ El repo cuenta una sola historia de producto: **captura verificada → conciliac
 - **Quien recibe la plata sale como quien asume el gasto.** "Le devolví 30 a mi hermana" queda atribuido a la hermana con confianza alta (2 errores silenciosos de 99, `docs/evaluacion.md`). No viene de la mejora 2. ¿Se ataca antes de la conciliación o después?
 - **"Devolución de la camisa 20"** sigue entrando como gasto de ropa con confianza alta. Sumar sustantivos a los marcadores frena también "pagué 5 por la devolución del paquete". ¿Se deja como límite?
 - **Mejora 5** ("me pagaron" por prompt): cambia el prompt y pide una corrida nueva de 104 llamadas.
+- **Cruce: ¿el pago de la tarjeta cruza con un gasto?** Hoy no (solo débitos), y por eso faltó un par que la verdad cuenta como `exacto`. Si cruza, el pago y los consumos de la tarjeta pueden contarse dos veces.
+- **Cruce: ¿se resuelven los empates alternados?** Dos cargos y dos gastos iguales en días alternados quedan sin unir. Resolverlo pide una regla nueva (por ejemplo, preferir el gasto anterior al cargo) y otra medición.
+- **Cruce: ¿la regla 3 compara raíces de palabras?** "Librería" contra "libros" no coincide. Cambiarlo también pide otra medición, y el set sintético hoy no le da pares a la regla 3.
 - **G0 (fuentes de la conciliación):** faltan las respuestas en `docs/conciliacion.md` (la sección está vacía). Sin eso no hay banco real en `config/bancos.yaml` ni se sabe si hace falta Excel.
 - **Decisión de rumbo del 10-nov:** el repo se renombra, entra la conciliación de estados de cuenta (Fase G) y la Fase F sale de este repo.
 
@@ -122,8 +127,9 @@ Limitación conocida (decidida el 12-nov): la conciliación es **uno a uno y sol
 - [x] **Cierre:** importar un estado sintético funciona, uno que no cuadra se rechaza con un mensaje exacto y el mismo archivo dos veces no duplica nada (`docs/conciliacion.md`).
 - [ ] Excel (`openpyxl`): solo si G0 dice que el banco lo exporta.
 - [ ] Entrada del banco real en `config/bancos.yaml` (depende de G0).
-- [ ] `conciliacion/reglas.py` y `recurrentes.py`.
-- [ ] CLI: `--conciliar <AAAA-MM>` y `--exportar-bi`.
+- [x] `conciliacion/reglas.py` y CLI `--conciliar <AAAA-MM>` (rama `fase-g2-reglas`).
+- [ ] `conciliacion/recurrentes.py`.
+- [ ] CLI: `--exportar-bi`.
 
 ### G1b. PDF (solo si G0 dice "solo PDF")
 
@@ -136,7 +142,7 @@ Limitación conocida (decidida el 12-nov): la conciliación es **uno a uno y sol
 - [ ] Mini App: lista "Sin registrar" con Registrar o Ignorar, por el flujo de confirmación de siempre.
 - [ ] `--exportar` (gastos) y `--exportar-bi` neutralizan las celdas de texto que empiezan con `=`, `+`, `-` o `@`, en una PR aparte de la ingesta (decisión en `docs/conciliacion.md`).
 - [ ] `--exportar-bi` escribe las vistas a CSV; dashboard de 3 páginas (Cobertura, Gasto real, Costo del banco y suscripciones) con datos sintéticos.
-- [ ] Medición: precisión y recall por regla sobre los pares de `evals/pares_verdaderos.csv`. Las etiquetas ya están (53 filas, salen del generador, no de las reglas; los pagos partidos son fallo esperado del 1 a 1); falta `reglas.py` y el cálculo.
+- [x] Medición: precisión y recall por regla y por `categoria_caso` sobre `evals/pares_verdaderos.csv` (`python scripts/medir_cruce.py`, una sola corrida con las reglas congeladas). Tabla en `docs/conciliacion.md`.
 - [ ] **Cierre:** vistas con tests, "Sin registrar" funcionando, dashboard en PDF y capturas, tabla de precisión y recall en `docs/conciliacion.md` y una línea en el README.
 
 ## Fase C. Evaluación (cerrada salvo la mejora 2)

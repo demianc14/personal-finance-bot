@@ -233,13 +233,14 @@ src/family_expense_bot/
   dashboard/
     report.py            # agregaciones mensuales y reporte de calidad
     presupuesto.py       # bolsillos 30/30/20/20, "¿puedo?", alertas
-  conciliacion/          # Fase G: la ingesta está hecha; el cruce, por construir
+  conciliacion/          # Fase G: ingesta y reglas de cruce hechas; vistas y Power BI, por construir
     contrato.py          # EstadoLeido, MovimientoLeido, Problema, EstadoRechazado
     bancos.py            # carga de config/bancos.yaml y reglas de movimientos.tipo
     ingesta.py           # CSV del banco → contrato Pydantic (Excel espera a G0)
     verificacion.py      # invariante de saldo, saldo corrido, fechas, duplicados, continuidad
     importar.py          # leer + verificar + guardar todo o nada
-    reglas.py            # (por construir) reglas de cruce movimiento ↔ gasto, con nombre
+    reglas.py            # reglas de cruce movimiento ↔ gasto, en orden y con nombre (--conciliar)
+    medicion.py          # precisión y recall del cruce contra evals/pares_verdaderos.csv
     recurrentes.py       # (por construir) suscripciones y cargos que se repiten
   evaluacion.py          # banco etiquetado contra el LLM real (--evaluar)
   config.py
@@ -252,6 +253,7 @@ evals/                   # mensajes.yaml (sintético) y corridas/ guardadas
 n8n/                     # segunda implementación, congelada
 scripts/capturas.py      # capturas del README con datos sintéticos
 scripts/estado_sintetico.py  # estados de cuenta sintéticos que cuadran, y que no; base sintética
+scripts/medir_cruce.py       # mide las reglas de cruce sobre la base sintética
 data/processed/          # NUNCA se sube al repo — solo local, .gitignore
 tests/                   # fixtures de mensajes; el LLM siempre mockeado
 ```

@@ -1,0 +1,38 @@
+Base sintética: 32 gastos y 48 movimientos; 53 filas.
+
+| Regla | Pares hechos | Correctos | Precisión | Recall (aporte) |
+|---|---|---|---|---|
+| `monto_y_fecha` | 13 | 13 | 100% | 13 de 24 (54%) |
+| `monto_3_dias` | 7 | 7 | 100% | 7 de 24 (29%) |
+| `monto_y_descripcion` | 0 | 0 | — | 0 de 24 (0%) |
+| Total | 20 | 20 | 100% | 20 de 24 (83%) |
+
+| categoria_caso | Filas | Pares a encontrar | Unidos | Correctos | Precisión | Recall |
+|---|---|---|---|---|---|---|
+| `exacto` | 12 | 12 | 11 | 11 | 100% | 92% |
+| `movimiento_sin_gasto` | 10 | 0 | 0 | 0 | — | — |
+| `fecha_desfasada` | 6 | 6 | 6 | 6 | 100% | 100% |
+| `mismo_monto_misma_semana` | 6 | 5 | 3 | 3 | 100% | 60% |
+| `comision` | 6 | 0 | 0 | 0 | — | — |
+| `fecha_fuera_de_ventana` | 1 | 1 | 0 | 0 | — | 0% |
+| `interes` | 2 | 0 | 0 | 0 | — | — |
+| `devolucion` | 2 | 0 | 0 | 0 | — | — |
+| `pago_partido` | 3 | 0 | 0 | 0 | — | — |
+| `gasto_sin_movimiento` | 5 | 0 | 0 | 0 | — | — |
+
+Débitos sin conciliar: 15; por empate: 2.
+  - empate: 2026-05 línea 21
+  - empate: 2026-05 línea 22
+
+Fallos esperados (no entran al recall): 3
+  - 2026-05 línea 18 (pago_partido), gasto verdadero 26: sin unir
+  - 2026-05 línea 19 (pago_partido), gasto verdadero 26: sin unir
+  - 2026-05 línea 25 (pago_partido), gasto verdadero 31|32: sin unir
+
+Pares equivocados: 0
+
+Pares que faltaron: 4
+  - 2026-03 línea 9 (exacto), gasto verdadero 5
+  - 2026-03 línea 16 (fecha_fuera_de_ventana), gasto verdadero 11
+  - 2026-05 línea 21 (mismo_monto_misma_semana), gasto verdadero 27
+  - 2026-05 línea 22 (mismo_monto_misma_semana), gasto verdadero 28
