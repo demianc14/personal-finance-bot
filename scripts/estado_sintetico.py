@@ -5,7 +5,7 @@ escribe los mismos bytes. `tests/test_privacy.py` exige que cada CSV versionado
 en `tests/fixtures/estados/` sea exactamente lo que genera este script, así que
 ahí no puede colarse un estado real.
 
-    python scripts/estado_sintetico.py              # reescribe tests/fixtures/estados/
+    python scripts/estado_sintetico.py              # reescribe tests/fixtures/estados/ y los pares
     python scripts/estado_sintetico.py --tabla      # importa cada caso y muestra qué pasó
     python scripts/estado_sintetico.py --base RUTA  # base sintética del bot, para probar el cruce
 
@@ -13,9 +13,15 @@ ahí no puede colarse un estado real.
 salida es la tabla de `docs/conciliacion.md` (un test las compara).
 
 `--base` crea una base nueva (se niega si el archivo existe) con gastos
-inventados de marzo y los estados de marzo y abril ya importados. Algunos
-gastos calzan con un movimiento el mismo día, otros a uno o dos días, uno a
-cuatro, y hay movimientos sin gasto y un gasto en efectivo sin movimiento.
+inventados de marzo y mayo y los estados de marzo, abril y mayo ya importados.
+Algunos gastos calzan con un movimiento el mismo día, otros a uno o tres días,
+uno a cuatro, y hay movimientos sin gasto y gastos en efectivo sin movimiento.
+
+`evals/pares_verdaderos.csv` es la verdad para evaluar la conciliación: una fila
+por movimiento con el gasto que lo originó, y una por gasto sin movimiento. Sale
+de cómo se declararon los datos acá (cada movimiento y cada gasto nacen con su
+etiqueta), no de ninguna regla de cruce. No hay azar: la "semilla fija" es que
+todo está escrito a mano y en orden.
 """
 
 import csv
@@ -89,10 +95,110 @@ GASTOS: list[tuple[int, str, str, str]] = [
     (23, "40.00", "educacion", "libros"),  # el banco lo cobró el 27: a cuatro días
 ]
 
+Etiqueta = tuple[tuple[int, ...], str]
+"""Ids de gasto (vacío: ninguno) y `categoria_caso` de un movimiento."""
+
+SEMANA = "mismo_monto_misma_semana"
+DESFASE = "fecha_desfasada"
+SIN_GASTO = "movimiento_sin_gasto"
+PARTIDO = "pago_partido"
+FALLOS_ESPERADOS = {PARTIDO}
+"""Casos que el cruce uno a uno no resuelve: un cargo con varios gastos o al revés."""
+
+# Etiquetas de cada fila de MARZO y ABRIL, en el mismo orden. Los ids de gasto son
+# la posición (desde 1) en GASTOS: así los guarda la base. El gasto 6 (taxi en
+# efectivo) no tiene movimiento. Las dos filas del bus son idénticas: la verdad le
+# da el gasto a la primera, pero cualquiera de las dos sería un acierto.
+ETIQUETAS_MARZO: list[Etiqueta] = [
+    ((1,), "exacto"),
+    ((), SIN_GASTO),
+    ((2,), "exacto"),
+    ((), SIN_GASTO),
+    ((3,), DESFASE),
+    ((4,), SEMANA),
+    ((), SEMANA),
+    ((5,), "exacto"),
+    ((7,), DESFASE),
+    ((), "comision"),
+    ((), SIN_GASTO),
+    ((8,), "exacto"),
+    ((9,), "exacto"),
+    ((10,), "exacto"),
+    ((11,), "fecha_fuera_de_ventana"),
+    ((), "interes"),
+    ((), "comision"),
+]
+ETIQUETAS_ABRIL: list[Etiqueta] = [
+    ((), SIN_GASTO),
+    ((), SIN_GASTO),
+    ((), "comision"),
+    ((), SIN_GASTO),
+    ((), "comision"),
+]
+
+MAYO_GASTOS: dict[str, tuple[date, str, str, str]] = {
+    # Clave, fecha, monto, categoría y descripción. El orden da los ids (siguen a GASTOS).
+    "super": (date(2026, 5, 4), "91.20", "alimentacion", "supermercado"),
+    "gasolina": (date(2026, 5, 6), "24.00", "transporte", "gasolina"),
+    "farmacia": (date(2026, 5, 8), "18.90", "personal", "farmacia"),
+    "camisa": (date(2026, 5, 8), "45.00", "ropa", "camisa"),  # luego la devuelven
+    "cafe1": (date(2026, 5, 9), "7.50", "comida_fuera", "cafe"),
+    "propina": (date(2026, 5, 10), "5.00", "comida_fuera", "propina en efectivo"),
+    "cafe2": (date(2026, 5, 11), "7.50", "comida_fuera", "cafe"),
+    "cine": (date(2026, 5, 12), "28.00", "entretenimiento", "cine"),
+    "cena": (date(2026, 5, 12), "22.50", "comida_fuera", "cena"),  # el banco: tres días después
+    "papeleria": (date(2026, 5, 13), "15.60", "educacion", "papeleria"),
+    "bus": (date(2026, 5, 14), "0.45", "transporte", "bus en efectivo"),  # = la comisión
+    "chaqueta": (date(2026, 5, 17), "75.00", "ropa", "chaqueta"),
+    "taxi": (date(2026, 5, 18), "11.00", "transporte", "taxi"),
+    "libro": (date(2026, 5, 19), "33.00", "educacion", "libro"),  # el banco: tres días antes
+    "regalo": (date(2026, 5, 19), "100.00", "personal", "regalo"),  # pagado en dos cargos
+    "almuerzo1": (date(2026, 5, 20), "12.00", "comida_fuera", "almuerzo"),
+    "almuerzo2": (date(2026, 5, 22), "12.00", "comida_fuera", "almuerzo"),
+    "mercado": (date(2026, 5, 22), "18.40", "alimentacion", "mercado en efectivo"),
+    "parqueadero": (date(2026, 5, 28), "2.50", "transporte", "parqueadero en efectivo"),
+    "super2": (date(2026, 5, 29), "60.00", "alimentacion", "supermercado"),  # un cargo, dos gastos
+    "farmacia2": (date(2026, 5, 29), "40.00", "personal", "farmacia"),
+}
+
+MAYO_ESPEC: list[tuple[Fila, tuple[tuple[str, ...], str]]] = [
+    # Movimiento, y la clave de cada gasto que lo originó (vacío: ninguno) con su caso.
+    ((date(2026, 5, 3), "TRANSFERENCIA RECIBIDA NOMINA", 120_000), ((), SIN_GASTO)),
+    ((date(2026, 5, 4), "SUPERMERCADO SINTETICO", -9120), (("super",), "exacto")),
+    ((date(2026, 5, 6), "GASOLINERA SINTETICA", -2400), (("gasolina",), "exacto")),
+    ((date(2026, 5, 7), "STREAMING SINTETICO", -999), ((), SIN_GASTO)),
+    ((date(2026, 5, 8), "FARMACIA SINTETICA", -1890), (("farmacia",), "exacto")),
+    ((date(2026, 5, 8), "TIENDA DE ROPA SINTETICA", -4500), (("camisa",), "exacto")),
+    ((date(2026, 5, 9), "CAFE SINTETICO", -750), (("cafe1",), SEMANA)),
+    ((date(2026, 5, 12), "CAFE SINTETICO", -750), (("cafe2",), SEMANA)),
+    ((date(2026, 5, 12), "CINE SINTETICO", -2800), (("cine",), "exacto")),
+    ((date(2026, 5, 13), "PAPELERIA SINTETICA", -1560), (("papeleria",), "exacto")),
+    ((date(2026, 5, 14), "COMISION RETIRO CAJERO", -45), ((), "comision")),
+    ((date(2026, 5, 14), "RETIRO CAJERO", -3000), ((), SIN_GASTO)),
+    ((date(2026, 5, 15), "RESTAURANTE EL SINTETICO", -2250), (("cena",), DESFASE)),
+    ((date(2026, 5, 16), "LIBRERIA SINTETICA", -3300), (("libro",), DESFASE)),
+    ((date(2026, 5, 17), "DEVOLUCION TIENDA DE ROPA SINTETICA", 4500), ((), "devolucion")),
+    ((date(2026, 5, 18), "TIENDA DE ROPA SINTETICA", -7500), (("chaqueta",), DESFASE)),
+    ((date(2026, 5, 19), "TIENDA DE REGALOS SINTETICA", -6000), (("regalo",), PARTIDO)),
+    ((date(2026, 5, 19), "TIENDA DE REGALOS SINTETICA", -4000), (("regalo",), PARTIDO)),
+    ((date(2026, 5, 20), "TAXI SINTETICO", -1100), (("taxi",), DESFASE)),
+    ((date(2026, 5, 21), "RESTAURANTE EL SINTETICO", -1200), (("almuerzo1",), SEMANA)),
+    ((date(2026, 5, 23), "RESTAURANTE EL SINTETICO", -1200), (("almuerzo2",), SEMANA)),
+    ((date(2026, 5, 26), "DEVOLUCION SUPERMERCADO SINTETICO", 1250), ((), "devolucion")),
+    ((date(2026, 5, 27), "SEGURO SINTETICO", -2100), ((), SIN_GASTO)),
+    ((date(2026, 5, 29), "SUPERMERCADO SINTETICO", -10_000), (("super2", "farmacia2"), PARTIDO)),
+    ((date(2026, 5, 31), "INTERES GANADO", 15), ((), "interes")),
+    ((date(2026, 5, 31), "MANTENIMIENTO DE CUENTA", -150), ((), "comision")),
+]
+MAYO: list[Fila] = [fila for fila, _ in MAYO_ESPEC]
+
 MARZO_DESDE, MARZO_HASTA = date(2026, 3, 1), date(2026, 3, 31)
+MAYO_DESDE, MAYO_HASTA = date(2026, 5, 1), date(2026, 5, 31)
 ABRIL_DESDE, ABRIL_HASTA = date(2026, 4, 1), date(2026, 4, 30)
 
 ENCABEZADO = ["Fecha", "Descripción", "Monto", "Saldo"]
+ENCABEZADO_PARES = ["estado", "movimiento", "gasto_id", "categoria_caso", "fallo_esperado"]
+DESTINO_PARES = Path(__file__).resolve().parents[1] / "evals" / "pares_verdaderos.csv"
 ENCABEZADO_COMA = ["Fecha", "Detalle", "Débito", "Crédito"]
 TITULO_COMA = [["Banco Sintético", "Estado de cuenta"], ["Cuenta de ahorros", "Marzo 2026"]]
 
@@ -203,6 +309,9 @@ ENORME = "archivo_enorme.csv"
 
 _SALDOS = (SALDO_INICIAL, _final(MARZO, SALDO_INICIAL))
 _SALDOS_ABRIL = (_SALDOS[1], _final(ABRIL, _SALDOS[1]))
+_SALDOS_MAYO = (_SALDOS_ABRIL[1], _final(MAYO, _SALDOS_ABRIL[1]))
+MAYO_CSV = "mayo.csv"
+"""Solo lo usan la base sintética y los pares: no se versiona, `archivos()` no lo trae."""
 
 
 @dataclass(frozen=True)
@@ -456,8 +565,51 @@ def tabla() -> str:
     return "\n".join(lineas)
 
 
+def gastos_sinteticos() -> list[tuple[date, str, str, str]]:
+    """Fecha, monto, categoría y descripción de cada gasto de la base, en orden de id (desde 1)."""
+    marzo = [(date(2026, 3, dia), monto, cat, desc) for dia, monto, cat, desc in GASTOS]
+    return marzo + list(MAYO_GASTOS.values())
+
+
+def pares_verdaderos() -> bytes:
+    """El CSV de verdad: qué gasto originó cada movimiento, según cómo se declararon los datos.
+
+    Una fila por movimiento (`estado` es el periodo, `movimiento` su línea en el archivo)
+    y una por gasto sin movimiento (`estado` y `movimiento` en "ninguno"). `gasto_id` es
+    "ninguno", un id o varios con "|" (un cargo que son varios gastos).
+    """
+    clave_a_id = {
+        clave: len(GASTOS) + posicion for posicion, clave in enumerate(MAYO_GASTOS, start=1)
+    }
+    estados: list[tuple[str, list[Fila], list[Etiqueta], int]] = [
+        ("2026-03", MARZO, ETIQUETAS_MARZO, 0),
+        ("2026-04", ABRIL, ETIQUETAS_ABRIL, 0),
+        (
+            "2026-05",
+            MAYO,
+            [(tuple(clave_a_id[c] for c in claves), caso) for _, (claves, caso) in MAYO_ESPEC],
+            0,
+        ),
+    ]
+    filas: list[list[str]] = [list(ENCABEZADO_PARES)]
+    con_movimiento: set[int] = set()
+    for periodo, movimientos, etiquetas, _ in estados:
+        assert len(movimientos) == len(etiquetas), periodo
+        assert [f for f, _, _ in movimientos] == sorted(f for f, _, _ in movimientos), periodo
+        for indice, (ids, caso) in enumerate(etiquetas):
+            con_movimiento.update(ids)
+            fallo = "si" if caso in FALLOS_ESPERADOS else "no"
+            gasto = "|".join(map(str, ids)) or "ninguno"
+            # La línea 1 es el encabezado del CSV del banco.
+            filas.append([periodo, str(indice + 2), gasto, caso, fallo])
+    for gasto_id in range(1, len(gastos_sinteticos()) + 1):
+        if gasto_id not in con_movimiento:
+            filas.append(["ninguno", "ninguno", str(gasto_id), "gasto_sin_movimiento", "no"])
+    return _csv(filas)
+
+
 def base_sintetica(ruta: Path) -> tuple[int, int]:
-    """Una base nueva del bot con gastos inventados y marzo y abril importados.
+    """Una base nueva del bot con gastos inventados y marzo, abril y mayo importados.
 
     Devuelve cuántos gastos y cuántos movimientos quedaron. Nunca escribe sobre
     una base que ya existe.
@@ -467,12 +619,12 @@ def base_sintetica(ruta: Path) -> tuple[int, int]:
     ruta.parent.mkdir(parents=True, exist_ok=True)
     engine = crear_engine(f"sqlite:///{ruta}")
     gastos = RepositorioGastos(engine)
-    for dia, monto, categoria, descripcion in GASTOS:
-        gastos.guardar(
+    for esperado, (fecha, monto, categoria, descripcion) in enumerate(gastos_sinteticos(), 1):
+        guardado = gastos.guardar(
             GastoExtraido(
                 monto=Decimal(monto),
                 categoria=categoria,
-                fecha=date(2026, 3, dia),
+                fecha=fecha,
                 atribuido_a="demian",
                 descripcion=descripcion,
                 texto_original=f"{monto} {descripcion}",
@@ -484,13 +636,16 @@ def base_sintetica(ruta: Path) -> tuple[int, int]:
             ),
             registrado_por=ID_DEMO,
         )
+        assert guardado.id == esperado, "los ids de gasto de pares_verdaderos.csv se desfasaron"
     bancos = cargar_bancos()
     movimientos = 0
     with tempfile.TemporaryDirectory() as temporal:
         preparar(Path(temporal))
+        (Path(temporal) / MAYO_CSV).write_bytes(_punto(_con_saldo(MAYO, _SALDOS_ABRIL[1])))
         for archivo, desde, hasta, (anterior, final) in (
             ("marzo.csv", MARZO_DESDE, MARZO_HASTA, _SALDOS),
             ("abril.csv", ABRIL_DESDE, ABRIL_HASTA, _SALDOS_ABRIL),
+            (MAYO_CSV, MAYO_DESDE, MAYO_HASTA, _SALDOS_MAYO),
         ):
             movimientos += importar_estado(
                 Path(temporal) / archivo,
@@ -503,7 +658,7 @@ def base_sintetica(ruta: Path) -> tuple[int, int]:
                 saldo_anterior_centavos=anterior,
                 saldo_final_centavos=final,
             ).movimientos
-    return len(GASTOS), movimientos
+    return len(gastos_sinteticos()), movimientos
 
 
 def main() -> None:
@@ -517,7 +672,9 @@ def main() -> None:
         print(f"{ruta}: {gastos} gastos y {movimientos} movimientos sintéticos (marzo y abril)")
     else:
         preparar(DESTINO)
+        DESTINO_PARES.write_bytes(pares_verdaderos())
         print(f"{len(archivos())} estados sintéticos en {DESTINO.relative_to(RAIZ)}")
+        print(f"pares verdaderos en {DESTINO_PARES.relative_to(RAIZ)}")
 
 
 if __name__ == "__main__":
