@@ -31,7 +31,9 @@ El repo cuenta una sola historia de producto: **captura verificada → conciliac
 - **Cruce: ¿el pago de la tarjeta cruza con un gasto?** Hoy no (solo débitos), y por eso faltó un par que la verdad cuenta como `exacto`. Si cruza, el pago y los consumos de la tarjeta pueden contarse dos veces.
 - **Cruce: ¿se resuelven los empates alternados?** Dos cargos y dos gastos iguales en días alternados quedan sin unir. Resolverlo pide una regla nueva (por ejemplo, preferir el gasto anterior al cargo) y otra medición.
 - **Cruce: ¿la regla 3 compara raíces de palabras?** "Librería" contra "libros" no coincide. Cambiarlo también pide otra medición, y el set sintético hoy no le da pares a la regla 3.
-- **G0 (fuentes de la conciliación):** faltan las respuestas en `docs/conciliacion.md` (la sección está vacía). Sin eso no hay banco real en `config/bancos.yaml` ni se sabe si hace falta Excel.
+- **G0 (fuentes de la conciliación):** Pichincha exporta solo PDF con texto; Diners, PDF y quizás CSV (lo verifica Demian). Faltan desde qué mes hay estados, el porcentaje en efectivo y dónde corre Power BI.
+- **G1b (PDF de Pichincha):** el diseño del parser espera el OK de Demian antes de escribir código.
+- **¿El dashboard va al repo en PDF?** El cierre de G2 lo pide, pero `tests/test_privacy.py` hoy falla con cualquier `.pdf` versionado fuera de `tests/fixtures/estados/`. Si va, hace falta una excepción explícita y acotada, como la de los CSV sintéticos.
 - **Decisión de rumbo del 10-nov:** el repo se renombra, entra la conciliación de estados de cuenta (Fase G) y la Fase F sale de este repo.
 
 ### Operación
@@ -106,10 +108,10 @@ Limitación conocida (decidida el 12-nov): la conciliación es **uno a uno y sol
 
 ### G0. Fuentes (DECIDE DEMIAN)
 
-- [ ] Banco y tarjeta; si exportan CSV o Excel; si el PDF trae texto.
+- [x] Banco y tarjeta; si exportan CSV o Excel; si el PDF trae texto. Pichincha: solo PDF con texto. Diners: PDF, el CSV del portal sin confirmar.
 - [ ] Desde qué mes hay estados de cuenta y cuánto se paga en efectivo.
 - [ ] Dónde corre Power BI (Desktop no corre en Mac).
-- [ ] Respuestas en `docs/conciliacion.md`.
+- [x] Respuestas en `docs/conciliacion.md` (las que hay; lo demás figura como pendiente).
 
 ### G1. Ingesta y modelo
 

@@ -6,13 +6,18 @@ El bot sabe lo que le escribo; el banco sabe lo que de verdad salió. Esta parte
 
 Todo lo de esta página se hizo con datos inventados. Ningún estado real entra al repo ni va a un LLM.
 
-## G0. Fuentes (pendiente, la escribe Demian)
+## G0. Fuentes
 
-- [ ] Banco y tarjeta; si exportan CSV o Excel; si el PDF trae texto.
-- [ ] Desde qué mes hay estados de cuenta y cuánto se paga en efectivo.
-- [ ] Dónde corre Power BI.
+| Fuente | Qué exporta | Estado |
+|---|---|---|
+| Pichincha (cuenta) | PDF con texto seleccionable (3 páginas y unos 3.200 caracteres en el estado de ejemplo) | Confirmado |
+| Diners (tarjeta) | PDF; puede ofrecer CSV en su portal, lo verifica Demian | Sin confirmar |
 
-Mientras no esté, `config/bancos.yaml` solo trae dos bancos inventados. Excel no se lee todavía: pide una dependencia nueva (`openpyxl`) y no se agrega hasta saber si hace falta.
+- Desde qué mes hay estados de cuenta: pendiente de Demian.
+- Porcentaje que se paga en efectivo: pendiente de Demian.
+- Dónde corre Power BI: pendiente de Demian.
+
+Pichincha no exporta CSV ni Excel, así que entra la subfase del PDF (G1b en [`ROADMAP.md`](../ROADMAP.md)). Hasta que esté, `config/bancos.yaml` solo trae dos bancos inventados. Excel no se lee todavía: pide una dependencia nueva (`openpyxl`) y no se agrega hasta saber si hace falta.
 
 ## Importar un estado
 
@@ -156,7 +161,7 @@ Las reglas no se tocaron después de ver estos resultados.
 - **Una fila repetida suelta no se detecta por sí sola.** Si no es real, la delata el saldo.
 - **El archivo va del movimiento más viejo al más nuevo.** Un banco que exporte al revés rompe el saldo corrido; haría falta una opción en el yaml. Se queda así hasta ver el banco real (G0).
 - **No hay filas de totales al final.** Una fila "Total" se rechaza como fila a medio llenar. Se queda así hasta ver el banco real (G0).
-- **Solo CSV.** Excel y PDF dependen de G0.
+- **Solo CSV.** Pichincha exporta PDF (G0): su lectura es la subfase G1b, todavía sin código. Excel depende de lo que responda Diners.
 - **Una fecha en mes/día que también sirve como día/mes no se nota en esa fila** (05/03 es 5 de marzo o 3 de mayo). El archivo se rechaza igual en cuanto una fila tiene día mayor a 12 o cae fuera del periodo.
 
 ## Qué rechaza y con qué mensaje
