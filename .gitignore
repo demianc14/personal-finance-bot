@@ -12,10 +12,12 @@ exports/
 *.parquet
 *.pbix
 
-# Única excepción: estados de cuenta sintéticos. Los genera
-# scripts/estado_sintetico.py y tests/test_privacy.py exige que cada uno sea,
-# byte a byte, lo que sale del script. Solo CSV y solo en esta carpeta.
+# Únicas excepciones: lo sintético que genera scripts/estado_sintetico.py, y
+# tests/test_privacy.py exige que cada archivo sea, byte a byte, lo que sale del
+# script: los estados de cuenta (solo CSV, solo en esta carpeta) y las etiquetas
+# de verdad de la conciliación (ids y números de línea, sin montos).
 !tests/fixtures/estados/*.csv
+!evals/pares_verdaderos.csv
 
 # Secretos (token del bot, API keys del LLM)
 .env

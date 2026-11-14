@@ -32,7 +32,7 @@ Para probar sin tocar la base real:
 python scripts/estado_sintetico.py --base /tmp/sintetica.db
 ```
 
-Crea una base nueva con 11 gastos inventados y los estados de marzo y abril ya importados (22 movimientos). Se niega a escribir sobre un archivo que ya existe.
+Crea una base nueva con 32 gastos inventados y los estados de marzo, abril y mayo ya importados (48 movimientos). Se niega a escribir sobre un archivo que ya existe.
 
 ## Agregar un banco
 
