@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import calendar
 import functools
 import logging
 from datetime import date
@@ -16,6 +17,7 @@ from family_expense_bot.conciliacion.bancos import cargar_bancos
 from family_expense_bot.conciliacion.contrato import EstadoRechazado, plata
 from family_expense_bot.conciliacion.importar import importar_estado
 from family_expense_bot.conciliacion.ingesta import centavos_declarados
+from family_expense_bot.conciliacion.reglas import conciliar
 from family_expense_bot.config import Settings
 from family_expense_bot.dashboard.report import exportar_csv
 from family_expense_bot.evaluacion import (
@@ -152,6 +154,14 @@ def _parser() -> argparse.ArgumentParser:
             help=f"Con --importar-estado: saldo {saldo} como lo muestra el banco, con punto "
             "decimal (1234.05). Obligatorio.",
         )
+    parser.add_argument(
+        "--conciliar",
+        type=_mes,
+        metavar="AAAA-MM",
+        help="Cruza los movimientos de ese mes con los gastos registrados, con reglas "
+        "deterministas y sin LLM. Guarda cada par con la regla que lo unió; los movimientos "
+        "sin par no se guardan como gasto.",
+    )
     return parser
 
 
@@ -184,6 +194,11 @@ def main() -> None:
 
     if args.importar_estado:
         _importar_estado(parser, args, settings)
+        return
+
+    if args.conciliar:
+        desde, hasta = args.conciliar
+        _conciliar(desde, hasta, settings)
         return
 
     if args.evaluar:
@@ -304,6 +319,31 @@ def _importar_estado(
     )
     for aviso in resultado.avisos:
         print(f"  Aviso: {aviso}")
+
+
+def _mes(texto: str) -> tuple[date, date]:
+    """El primer y el último día de un mes escrito como AAAA-MM."""
+    try:
+        primero = date.fromisoformat(f"{texto}-01")
+        if len(texto) != 7:
+            raise ValueError
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{texto!r} no es un mes: va como AAAA-MM") from None
+    return primero, primero.replace(day=calendar.monthrange(primero.year, primero.month)[1])
+
+
+def _conciliar(desde: date, hasta: date, settings: Settings) -> None:
+    try:
+        engine = crear_engine(settings.database_url)
+    except EsquemaDesactualizado as e:
+        raise SystemExit(f"No concilio: {e}") from e
+    cruce = conciliar(engine, cargar_bancos().genericas, desde, hasta)
+    reglas = ", ".join(f"{regla} {cuantos}" for regla, cuantos in cruce.por_regla.items())
+    print(f"Conciliación de {desde:%Y-%m}: {len(cruce.pares)} pares nuevos ({reglas}).")
+    print(
+        f"  Quedan {cruce.sin_conciliar} débitos sin conciliar; {len(cruce.empatados)} de ellos "
+        "por empate entre candidatos iguales."
+    )
 
 
 def _cliente_gemini(settings: Settings, modelo: str | None = None) -> GeminiCliente:

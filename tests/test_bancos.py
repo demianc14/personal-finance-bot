@@ -167,3 +167,17 @@ def test_las_frases_son_palabras_completas() -> None:
     """ "comisionista" no es una comisión, ni "desinteres" un interés."""
     assert asignar_tipo("PAGO A COMISIONISTA", -5000, REGLAS) == "debito"
     assert asignar_tipo("LIBRERIA DESINTERES", -900, REGLAS) == "debito"
+
+
+# --- Palabras genéricas del cruce ---
+
+
+def test_las_palabras_genericas_se_comparan_sin_tildes(tmp_path: Path) -> None:
+    bancos = _cargar(tmp_path, {"tope_bytes": 10, "bancos": {}, "palabras_genericas": ["Débito"]})
+    assert bancos.genericas == {"debito"}
+
+
+@pytest.mark.parametrize("palabra", ["pago tarjeta", "sa", "visa2", ""])
+def test_una_palabra_generica_que_nunca_coincidiria_no_carga(tmp_path: Path, palabra: str) -> None:
+    with pytest.raises(ValidationError, match="no sirve como palabra genérica"):
+        _cargar(tmp_path, {"tope_bytes": 10, "bancos": {}, "palabras_genericas": [palabra]})
