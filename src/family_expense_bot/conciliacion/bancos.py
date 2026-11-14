@@ -9,7 +9,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from family_expense_bot.conciliacion.contrato import TipoMovimiento
-from family_expense_bot.extraction.categorias import menciona_alguna
+from family_expense_bot.extraction.categorias import menciona_alguna, normalizar
 
 RUTA_POR_DEFECTO = Path(__file__).resolve().parents[3] / "config" / "bancos.yaml"
 
@@ -97,6 +97,26 @@ class Bancos(BaseModel):
     tope_bytes: int = Field(gt=0)
     """Un archivo más grande se rechaza antes de leerlo."""
     bancos: dict[str, Banco]
+    palabras_genericas: list[str] = []
+    """Palabras que no distinguen un comercio de otro ("compra", "pago"). Las usa
+    la regla de cruce por descripción: una sola palabra en común no alcanza si es
+    de estas."""
+
+    @field_validator("palabras_genericas")
+    @classmethod
+    def _palabras_sueltas(cls, v: list[str]) -> list[str]:
+        for palabra in v:
+            if not re.fullmatch(r"[a-z]{4,}", normalizar(palabra)):
+                raise ValueError(
+                    f"{palabra!r} no sirve como palabra genérica: va una sola palabra, "
+                    "solo letras y de cuatro o más"
+                )
+        return v
+
+    @property
+    def genericas(self) -> frozenset[str]:
+        """Sin tildes ni mayúsculas, como las compara el cruce."""
+        return frozenset(normalizar(p) for p in self.palabras_genericas)
 
     @model_validator(mode="before")
     @classmethod

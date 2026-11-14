@@ -228,6 +228,46 @@ confirmación de siempre.
 - **El invariante de saldo no vive en el esquema.** Saldo anterior + créditos
   − débitos = saldo final lo verifica la ingesta antes de guardar nada.
 
+### Reglas de cruce (14-nov-2026)
+
+Tres reglas en orden, cada una sobre lo que dejó libre la anterior:
+`monto_y_fecha`, `monto_3_dias` y `monto_y_descripcion` (±10 días y descripción
+parecida). El detalle y la medición están en [conciliacion.md](conciliacion.md#cruce-con-los-gastos).
+
+- **Solo cruzan los débitos.** Comisión, interés, pago de tarjeta y todo lo que
+  entra quedan fuera: no son un gasto registrado. Una devolución no cruza ni
+  deshace el par de la compra.
+- **La ventana de la regla 3 es ±10 días** y se fijó antes de medir, por la
+  lógica de las reglas: con ±3 la regla 2 ya se habría llevado esos pares.
+- **Descripción parecida = dos palabras en común, o una si es distintiva.** Las
+  palabras van sin tildes, sin números y con cuatro letras o más. "Distintiva"
+  es que no está en `palabras_genericas` de `config/bancos.yaml` (compra, pago,
+  débito, tienda...). La lista se escribió antes de medir.
+- **Desempate:** gana el gasto más cercano en días y después el que comparte
+  más palabras. Un par solo se acepta si la elección es mutua.
+- **Empate total: no se une ninguno.** Un par mal unido esconde un gasto sin
+  registrar; uno sin unir solo queda pendiente. `--conciliar` dice cuántos
+  movimientos quedaron así.
+- **Gemelos exactos: se unen en orden.** Si N movimientos de la misma fecha y N
+  gastos de la misma fecha tienen el mismo monto y el mismo parecido, se unen
+  por línea del archivo e id del gasto. Motivo: son intercambiables, así que
+  cualquier asignación da la misma cobertura y el mismo total, y abstenerse
+  dejaría sin conciliar dos cafés iguales del mismo día, que es un caso
+  cotidiano. Test: `test_gemelos_exactos_se_unen_en_orden`.
+- **Si sobran movimientos gemelos, se une uno y el resto queda sin conciliar**
+  (dos cargos iguales el mismo día y un solo gasto). Es el mismo motivo: no
+  importa cuál de los dos cargos se queda con el gasto, y el que sobra es
+  justo el que falta registrar. Si lo que sobra son gastos, o los movimientos
+  empatados son de días distintos, no se une ninguno. Tests:
+  `test_dos_movimientos_iguales_el_mismo_dia_y_un_solo_gasto` y
+  `test_dos_movimientos_de_dias_distintos_empatan_por_un_gasto`.
+- **Los candidatos y el parecido salen de SQL; el desempate, de Python.** La
+  consulta trae los pares posibles (monto, tipo, ventana, parecido con una
+  función registrada en la conexión) y `resolver` decide entre los que
+  compiten. Es una función pura, sin base, con sus tests.
+- **Las reglas se congelaron en un commit antes de medir** (`c7694f0`) y se
+  midieron una vez. No se ajustan mirando `evals/pares_verdaderos.csv`.
+
 ## Privacidad
 
 El repo es público. La base de datos, los exports y el `.env` están en

@@ -155,6 +155,7 @@ def test_ningun_commit_del_historial_versiono_un_archivo_ignorado() -> None:
 # --- Estados de cuenta: lo único tabular que se versiona es sintético ---
 
 ESTADOS_SINTETICOS = "tests/fixtures/estados"
+PARES_VERDADEROS = "evals/pares_verdaderos.csv"
 DATOS = (".csv", ".tsv", ".xlsx", ".xls", ".pbix", ".parquet", ".db", ".sqlite", ".sqlite3")
 """Formatos en los que podría colarse un estado de cuenta o un export con montos reales."""
 
@@ -174,6 +175,7 @@ def test_lo_unico_tabular_versionado_son_los_estados_sinteticos() -> None:
         ["git", "ls-files", "-z"], cwd=ROOT, check=True, capture_output=True, text=True
     ).stdout.split("\0")
     sinteticos = {f"{ESTADOS_SINTETICOS}/{nombre}" for nombre in cargar().archivos()}
+    sinteticos.add(PARES_VERDADEROS)
     colados = [
         nombre
         for nombre in filter(None, archivos)
@@ -206,5 +208,13 @@ def test_los_estados_sinteticos_solo_nombran_bancos_y_comercios_inventados() -> 
         "INTERES GANADO",
         "MANTENIMIENTO DE CUENTA",
     }
-    for _, descripcion, _ in [*modulo.MARZO, *modulo.ABRIL]:
+    for _, descripcion, _ in [*modulo.MARZO, *modulo.ABRIL, *modulo.MAYO]:
         assert "SINTETIC" in descripcion or descripcion in genericas, descripcion
+
+
+def test_los_pares_verdaderos_se_versionan_y_son_lo_que_genera_el_script() -> None:
+    ignorado = subprocess.run(
+        ["git", "check-ignore", "--no-index", "-q", PARES_VERDADEROS], cwd=ROOT, check=False
+    )
+    assert ignorado.returncode == 1
+    assert (ROOT / PARES_VERDADEROS).read_bytes() == cargar().pares_verdaderos()

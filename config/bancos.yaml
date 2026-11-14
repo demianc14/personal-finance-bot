@@ -21,10 +21,46 @@
 #                   mayúsculas; `signo` (sale o entra) es opcional. Si ninguna
 #                   coincide: lo que sale es debito y lo que entra, credito.
 #
+# palabras_genericas (una lista para todos los bancos): palabras que no
+# distinguen un comercio de otro. La regla de cruce por descripción
+# (monto_y_descripcion) pide dos palabras en común, o una sola si NO está en
+# esta lista. Van sin tildes; solo cuentan palabras de cuatro letras o más.
+#
 # Los dos bancos de abajo son inventados: los usan los tests y
 # scripts/estado_sintetico.py. El banco real entra cuando Demian responda G0.
 
 tope_bytes: 1048576 # 1 MiB; un estado mensual en CSV pesa unos pocos KB
+
+# Vocabulario de cualquier estado de cuenta, no de un comercio. Se fijó antes de
+# medir el cruce (docs/conciliacion.md) y no se ajusta mirando la medición.
+palabras_genericas:
+  - compra
+  - compras
+  - pago
+  - pagos
+  - debito
+  - credito
+  - tienda
+  - tarjeta
+  - consumo
+  - cargo
+  - cuota
+  - abono
+  - transferencia
+  - retiro
+  - cajero
+  - deposito
+  - banco
+  - cuenta
+  - comercio
+  - servicio
+  - servicios
+  - factura
+  - recibo
+  - online
+  - internet
+  - nacional
+  - internacional
 
 bancos:
   # Con columna de saldo: se verifica fila por fila.

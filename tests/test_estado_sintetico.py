@@ -4,6 +4,7 @@ Cada caso corre la importación completa contra una base en memoria: lo que
 cuadra entra y lo hostil se rechaza por la razón esperada, sin guardar nada.
 """
 
+import csv
 from pathlib import Path
 from typing import Any
 
@@ -64,13 +65,13 @@ def test_los_tipos_salen_de_las_reglas_del_banco(carpeta: Path) -> None:
     assert resultado.por_tipo == tipos
 
 
-def test_la_base_sintetica_trae_gastos_y_los_dos_estados(tmp_path: Path) -> None:
+def test_la_base_sintetica_trae_gastos_y_los_tres_estados(tmp_path: Path) -> None:
     ruta = tmp_path / "sintetica.db"
-    assert sintetico.base_sintetica(ruta) == (11, 22)
+    assert sintetico.base_sintetica(ruta) == (32, 48)
     with crear_engine(f"sqlite:///{ruta}").connect() as con:
-        assert con.execute(text("SELECT count(*) FROM gastos")).scalar_one() == 11
-        assert con.execute(text("SELECT count(*) FROM estados_cuenta")).scalar_one() == 2
-        assert con.execute(text("SELECT count(*) FROM movimientos")).scalar_one() == 22
+        assert con.execute(text("SELECT count(*) FROM gastos")).scalar_one() == 32
+        assert con.execute(text("SELECT count(*) FROM estados_cuenta")).scalar_one() == 3
+        assert con.execute(text("SELECT count(*) FROM movimientos")).scalar_one() == 48
         assert con.execute(text("SELECT count(*) FROM conciliaciones")).scalar_one() == 0
 
 
@@ -87,3 +88,68 @@ def test_la_tabla_de_la_documentacion_es_la_que_sale_del_comando() -> None:
     documento = (RAIZ / "docs" / "conciliacion.md").read_text(encoding="utf-8")
     en_el_doc = documento.split(INICIO)[1].split(FIN)[0].strip()
     assert en_el_doc == sintetico.tabla()
+
+
+# --- Pares verdaderos (evals/pares_verdaderos.csv) ---
+
+PARES = RAIZ / "evals" / "pares_verdaderos.csv"
+REQUERIDOS = {
+    "mismo_monto_misma_semana",
+    "movimiento_sin_gasto",
+    "gasto_sin_movimiento",
+    "comision",
+    "interes",
+    "devolucion",
+    "pago_partido",
+    "fecha_desfasada",
+}
+
+
+def _pares() -> list[dict[str, str]]:
+    with PARES.open(encoding="utf-8", newline="") as archivo:
+        return list(csv.DictReader(archivo))
+
+
+def test_el_csv_de_pares_es_byte_a_byte_lo_que_regenera_el_script() -> None:
+    """Si falla por un cambio en el generador: `python scripts/estado_sintetico.py`."""
+    assert PARES.read_bytes() == sintetico.pares_verdaderos()
+    assert sintetico.pares_verdaderos() == sintetico.pares_verdaderos()
+
+
+def test_los_pares_son_suficientes_y_traen_los_casos_adversarios() -> None:
+    pares = _pares()
+    assert len(pares) >= 40
+    casos = {fila["categoria_caso"] for fila in pares}
+    assert casos >= REQUERIDOS
+    fallos = {fila["categoria_caso"] for fila in pares if fila["fallo_esperado"] == "si"}
+    assert fallos == {"pago_partido"}
+
+
+def test_cada_gasto_id_existe_y_cada_movimiento_tiene_exactamente_una_fila(tmp_path: Path) -> None:
+    ruta = tmp_path / "sintetica.db"
+    sintetico.base_sintetica(ruta)
+    with crear_engine(f"sqlite:///{ruta}").connect() as con:
+        gastos = {fila[0] for fila in con.execute(text("SELECT id FROM gastos"))}
+        movimientos = {
+            (str(fila[0])[:7], fila[1])
+            for fila in con.execute(
+                text(
+                    "SELECT e.periodo_desde, m.linea FROM movimientos m "
+                    "JOIN estados_cuenta e ON e.id = m.estado_id"
+                )
+            )
+        }
+    pares = _pares()
+    ids = [
+        int(i)
+        for fila in pares
+        if fila["gasto_id"] != "ninguno"
+        for i in fila["gasto_id"].split("|")
+    ]
+    assert set(ids) <= gastos
+    assert gastos <= set(ids), "hay gastos que ni se cruzan ni están marcados sin movimiento"
+    por_movimiento = [
+        (f["estado"], int(f["movimiento"])) for f in pares if f["movimiento"] != "ninguno"
+    ]
+    assert len(por_movimiento) == len(set(por_movimiento))
+    assert set(por_movimiento) == movimientos
