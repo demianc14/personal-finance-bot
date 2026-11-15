@@ -81,6 +81,8 @@ family-expense-bot --conciliar 2026-03
 
 Cruza los movimientos de ese mes con los gastos registrados y guarda cada par en `conciliaciones` con la regla que lo unió. Dice cuántos pares hizo cada regla, cuántos débitos quedaron sin conciliar y cuántos de ellos por empate. Correrlo dos veces no duplica nada, y un par anulado puede volver a cruzarse. Un movimiento sin par **no** se guarda como gasto: proponerlo es otra fase.
 
+Antes de cruzar, `--conciliar` audita las conciliaciones que ya hay. Si alguna está rota, no cruza nada y dice cuáles son (ver [Integridad](#integridad-de-las-conciliaciones)).
+
 Las reglas son deterministas, sin LLM, y van en orden. Cada una corre sobre lo que la anterior dejó libre:
 
 | Orden | Regla | Qué pide |
@@ -138,6 +140,26 @@ Quedaron 15 débitos sin conciliar, 2 de ellos por empate. Ningún par salió eq
 | Mayo, líneas 21 y 22: `RESTAURANTE EL SINTETICO`, 12.00 (días 21 y 23) | Dos "almuerzo" de 12.00 (días 20 y 22) | Empate: el cargo del 21 queda a un día de los dos gastos, y el gasto del 22 a un día de los dos cargos. No se unió ninguno. |
 
 Las reglas no se tocaron después de ver estos resultados.
+
+## Integridad de las conciliaciones
+
+Un par vigente solo une un gasto vigente con un movimiento vigente de un estado vigente, uno a uno. Lo sostienen tres cosas:
+
+- **Anular arrastra el par, en la misma transacción.** Borrar un gasto conciliado anula su par y el cargo vuelve a "sin conciliar". Editarlo (anular + crear) también: el gasto nuevo queda libre y el siguiente `--conciliar` lo cruza de nuevo. El par no se hereda porque la edición pudo cambiar el monto o la fecha.
+- **Anular un estado anula sus movimientos y sus pares** (`RepositorioEstados.anular`). Después, el mismo archivo se puede importar otra vez y cruza igual que antes. Todavía no hay comando para anular un estado: es un método del repositorio.
+- **`--conciliar` audita antes de cruzar.** Si encuentra un par vigente sobre un gasto anulado, sobre un movimiento o un estado anulado, o un movimiento o un gasto en más de un par, termina con error, lista los pares y no guarda nada.
+
+Una base anterior a este arreglo, o tocada a mano, puede traer pares rotos. Se reparan así:
+
+```bash
+family-expense-bot --reparar-integridad
+```
+
+```bash
+family-expense-bot --reparar-integridad --confirmar
+```
+
+El primero es una simulación: lista los pares que anularía y no cambia nada. Con `--confirmar` los anula en una transacción, con el motivo `reparado: <problema>`. Nada se borra. Si un movimiento o un gasto quedó en varios pares se anulan todos, y el siguiente `--conciliar` vuelve a cruzar lo que quedó libre.
 
 ## Decisiones
 

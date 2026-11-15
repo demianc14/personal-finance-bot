@@ -11,14 +11,15 @@ from decimal import Decimal
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import Engine, create_engine, event, inspect, select, text
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import ColumnElement, Engine, create_engine, event, inspect, select, text, update
+from sqlalchemy.orm import Session, sessionmaker
 
 from family_expense_bot.conciliacion.contrato import EstadoLeido, EstadoVigente
 from family_expense_bot.extraction.schema import GastoExtraido
 from family_expense_bot.storage.dinero import a_centavos, a_decimal
 from family_expense_bot.storage.models import (
     Base,
+    Conciliacion,
     EstadoCuenta,
     Extraccion,
     Gasto,
@@ -33,6 +34,23 @@ def _como_utc(momento: datetime) -> datetime:
     Sin esto, comparar `creado_en` contra un datetime con zona lanza TypeError.
     """
     return momento if momento.tzinfo else momento.replace(tzinfo=UTC)
+
+
+def _anular_conciliaciones(
+    sesion: Session, de: ColumnElement[bool], motivo: str, ahora: datetime
+) -> None:
+    """Anula los pares vigentes que cumplen `de`, dentro de la transacción de quien llama.
+
+    Una conciliación no sobrevive a su gasto ni a su estado: si quedara vigente,
+    el movimiento parecería conciliado con algo que ya no existe (y nunca saldría
+    como "sin registrar"), o el gasto quedaría retenido y no volvería a cruzar.
+    Va acá, y no en un trigger, para que se lea y se pruebe con el resto.
+    """
+    sesion.execute(
+        update(Conciliacion)
+        .where(Conciliacion.anulado_en.is_(None), de)
+        .values(anulado_en=ahora, motivo_anulacion=motivo[:200])
+    )
 
 
 class GastoRegistrado(BaseModel):
@@ -210,7 +228,9 @@ class RepositorioGastos:
         """Editar sin perder historia: anula el viejo y guarda el nuevo, todo o nada.
 
         Devuelve None si el viejo no existe, ya estaba anulado o lo registró otra
-        persona. El viejo queda con el motivo `editado → #<nuevo>`.
+        persona. El viejo queda con el motivo `editado → #<nuevo>`. Si estaba
+        conciliado, el par se anula en la misma transacción: el nuevo queda
+        libre y vuelve a cruzarse en el siguiente `--conciliar`.
         """
         if gasto.monto is None:
             raise GastoSinMonto(f"El gasto de {gasto.texto_original!r} no tiene monto")
@@ -225,8 +245,13 @@ class RepositorioGastos:
             nuevo = self._fila(gasto, registrado_por, False, origen, subcategoria)
             sesion.add(nuevo)
             sesion.flush()  # para conocer el id del nuevo antes de anotarlo en el viejo
-            viejo.anulado_en = datetime.now(UTC)
+            ahora = datetime.now(UTC)
+            viejo.anulado_en = ahora
             viejo.motivo_anulacion = f"editado → #{nuevo.id}"
+            # El par no se hereda: la edición pudo cambiar el monto o la fecha.
+            _anular_conciliaciones(
+                sesion, Conciliacion.gasto_id == id_gasto, f"gasto editado → #{nuevo.id}", ahora
+            )
         return GastoRegistrado.desde_fila(nuevo)
 
     def subcategorias_usadas(self, registrado_por: int) -> dict[str, list[str]]:
@@ -302,7 +327,11 @@ class RepositorioGastos:
             return [GastoRegistrado.desde_fila(f) for f in sesion.scalars(consulta)]
 
     def anular(self, id_gasto: int, motivo: str) -> bool:
-        """Borrado lógico. Devuelve False si no existe o ya estaba anulado."""
+        """Borrado lógico. Devuelve False si no existe o ya estaba anulado.
+
+        Si el gasto estaba conciliado, el par se anula en la misma transacción
+        y el movimiento vuelve a quedar sin conciliar.
+        """
         if not motivo.strip():
             raise ValueError("Anular un gasto exige un motivo")
 
@@ -310,8 +339,12 @@ class RepositorioGastos:
             fila = sesion.get(Gasto, id_gasto)
             if fila is None or fila.anulado_en is not None:
                 return False
-            fila.anulado_en = datetime.now(UTC)
+            ahora = datetime.now(UTC)
+            fila.anulado_en = ahora
             fila.motivo_anulacion = motivo.strip()
+            _anular_conciliaciones(
+                sesion, Conciliacion.gasto_id == id_gasto, f"gasto anulado: {motivo.strip()}", ahora
+            )
             return True
 
 
@@ -521,6 +554,35 @@ class RepositorioEstados:
                 for m in estado.movimientos
             )
         return self._vigente(fila)
+
+    def anular(self, id_estado: int, motivo: str) -> bool:
+        """Anula un estado con sus movimientos y sus pares. False si no existe o ya lo estaba.
+
+        Todo en una transacción. Los movimientos se anulan con el estado para
+        que ninguna consulta tenga que acordarse de mirar el estado, y los pares
+        para que sus gastos queden libres: después de anular, el mismo archivo
+        se puede importar de nuevo y vuelve a cruzar igual.
+        """
+        if not motivo.strip():
+            raise ValueError("Anular un estado exige un motivo")
+        with self._sesion.begin() as sesion:
+            fila = sesion.get(EstadoCuenta, id_estado)
+            if fila is None or fila.anulado_en is not None:
+                return False
+            ahora = datetime.now(UTC)
+            heredado = f"estado anulado: {motivo.strip()}"[:200]
+            fila.anulado_en = ahora
+            fila.motivo_anulacion = motivo.strip()
+            del_estado = select(Movimiento.id).where(Movimiento.estado_id == id_estado)
+            _anular_conciliaciones(
+                sesion, Conciliacion.movimiento_id.in_(del_estado), heredado, ahora
+            )
+            sesion.execute(
+                update(Movimiento)
+                .where(Movimiento.estado_id == id_estado, Movimiento.anulado_en.is_(None))
+                .values(anulado_en=ahora, motivo_anulacion=heredado)
+            )
+            return True
 
     @staticmethod
     def _vigente(fila: EstadoCuenta) -> EstadoVigente:
