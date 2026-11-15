@@ -35,8 +35,7 @@ El repo cuenta una sola historia de producto: **captura verificada → conciliac
 - **Cruce: ¿se espera al estado siguiente?** Si abril no está importado, el cargo del 30 de marzo se lleva el gasto del 1 de abril. Se puede dejar como límite (hoy) o no unir los cargos de los últimos 3 días del último estado importado hasta que entre el siguiente.
 - **Cruce: `CLAUDE.md` todavía describe las tres reglas "en orden".** Es un principio no negociable y no se tocó: dice "monto exacto y misma fecha, monto exacto a ±3 días, y monto exacto con descripción parecida", y hoy las dos primeras se deciden juntas y la tercera está apagada.
 - **G0 (fuentes de la conciliación):** Pichincha exporta solo PDF con texto; Diners, PDF y quizás CSV (lo verifica Demian). Faltan desde qué mes hay estados, el porcentaje en efectivo y dónde corre Power BI.
-- **G1b (PDF de Pichincha):** el diseño del parser espera el OK de Demian antes de escribir código.
-- **¿El dashboard va al repo en PDF?** El cierre de G2 lo pide, pero `tests/test_privacy.py` hoy falla con cualquier `.pdf` versionado fuera de `tests/fixtures/estados/`. Si va, hace falta una excepción explícita y acotada, como la de los CSV sintéticos.
+- **G1b (PDF de Pichincha):** diseño aprobado el 14-nov y fixtures sintéticos hechos. El parser espera a que termine el cambio de la ingesta (anulación en cascada, identidad de cuenta, solape en transacción).
 - **Decisión de rumbo del 10-nov:** el repo se renombra, entra la conciliación de estados de cuenta (Fase G) y la Fase F sale de este repo.
 
 ### Operación
@@ -136,8 +135,10 @@ Limitación conocida (decidida el 12-nov): la conciliación es **uno a uno y sol
 - [ ] `conciliacion/recurrentes.py`.
 - [ ] CLI: `--exportar-bi`.
 
-### G1b. PDF (solo si G0 dice "solo PDF")
+### G1b. PDF (G0: Pichincha solo exporta PDF)
 
+- [x] PDF sintéticos con la forma del real, reproducibles byte a byte (`scripts/estado_sintetico.py`, `tests/test_pdf_sintetico.py`); el contraste con el real fue una corrida local única (`docs/conciliacion.md`).
+- [ ] Parser con pypdf, después del cambio de la ingesta.
 - [ ] Texto con una librería de PDF y reglas; el LLM solo si las reglas no alcanzan y con la misma verificación (cada monto aparece literal en la página y el saldo cuadra).
 
 ### G2. Conciliación, SQL y Power BI
@@ -148,7 +149,7 @@ Limitación conocida (decidida el 12-nov): la conciliación es **uno a uno y sol
 - [ ] `--exportar` (gastos) y `--exportar-bi` neutralizan las celdas de texto que empiezan con `=`, `+`, `-` o `@`, en una PR aparte de la ingesta (decisión en `docs/conciliacion.md`).
 - [ ] `--exportar-bi` escribe las vistas a CSV; dashboard de 3 páginas (Cobertura, Gasto real, Costo del banco y suscripciones) con datos sintéticos.
 - [x] Medición: precisión y recall por regla y por `categoria_caso` sobre `evals/pares_verdaderos.csv` (`python scripts/medir_cruce.py`, una sola corrida con las reglas congeladas). Tabla en `docs/conciliacion.md`.
-- [ ] **Cierre:** vistas con tests, "Sin registrar" funcionando, dashboard en PDF y capturas, tabla de precisión y recall en `docs/conciliacion.md` y una línea en el README.
+- [ ] **Cierre:** vistas con tests, "Sin registrar" funcionando, dashboard en PNG en `docs/img/` (no PDF: decidido el 14-nov), tabla de precisión y recall en `docs/conciliacion.md` y una línea en el README.
 
 ## Fase C. Evaluación (cerrada salvo la mejora 2)
 
@@ -198,6 +199,6 @@ Decidido el 10-nov: tool use, RAG y agentes van al proyecto del asistente acadé
 - [x] Tabla "antes → después" de las mejoras de la Fase C, con la mejora 2.
 - [x] Al menos una automatización que actúa sin que se pida (D1).
 - [ ] Conciliación con invariante de saldo probado y precisión/recall medidos.
-- [ ] Dashboard Power BI con datos sintéticos en el repo (PDF + capturas).
+- [ ] Dashboard Power BI con datos sintéticos en el repo (PNG en `docs/img/`).
 - [ ] `/estado` con latencia y errores.
 - [ ] README de una pantalla y limitaciones honestas, al día con lo anterior.
