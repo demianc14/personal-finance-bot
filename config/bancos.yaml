@@ -22,14 +22,23 @@
 #                   coincide: lo que sale es debito y lo que entra, credito.
 #
 # palabras_genericas (una lista para todos los bancos): palabras que no
-# distinguen un comercio de otro. La regla de cruce por descripción
-# (monto_y_descripcion) pide dos palabras en común, o una sola si NO está en
-# esta lista. Van sin tildes; solo cuentan palabras de cuatro letras o más.
+# distinguen un comercio de otro. Una palabra en común solo desempata entre dos
+# candidatos del cruce si NO está en esta lista. La regla de cruce por
+# descripción (monto_y_descripcion) pide dos palabras en común, o una sola si
+# no está acá. Van sin tildes; solo cuentan palabras de cuatro letras o más.
+#
+# regla_descripcion: enciende la regla de cruce monto_y_descripcion (mismo
+# monto, hasta 10 días y descripción parecida). Apagada por defecto: no tiene
+# ningún par correcto medido y unió tres pares falsos por palabras vacías
+# ("para", "quito", "compra online"). No encenderla sin una medición nueva
+# (docs/conciliacion.md).
 #
 # Los dos bancos de abajo son inventados: los usan los tests y
 # scripts/estado_sintetico.py. El banco real entra cuando Demian responda G0.
 
 tope_bytes: 1048576 # 1 MiB; un estado mensual en CSV pesa unos pocos KB
+
+regla_descripcion: false
 
 # Vocabulario de cualquier estado de cuenta, no de un comercio. Se fijó antes de
 # medir el cruce (docs/conciliacion.md) y no se ajusta mirando la medición.

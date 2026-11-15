@@ -369,13 +369,21 @@ def _conciliar(desde: date, hasta: date, settings: Settings) -> None:
             "Corre `family-expense-bot --reparar-integridad` para ver qué anularía, y con "
             "--confirmar para anularlas."
         ) from e
-    cruce = conciliar(engine, cargar_bancos().genericas, desde, hasta)
+    bancos = cargar_bancos()
+    cruce = conciliar(
+        engine, bancos.genericas, desde, hasta, con_descripcion=bancos.regla_descripcion
+    )
     reglas = ", ".join(f"{regla} {cuantos}" for regla, cuantos in cruce.por_regla.items())
     print(f"Conciliación de {desde:%Y-%m}: {len(cruce.pares)} pares nuevos ({reglas}).")
     print(
         f"  Quedan {cruce.sin_conciliar} débitos sin conciliar; {len(cruce.empatados)} de ellos "
         "por empate entre candidatos iguales."
     )
+    if cruce.pares_fuera_del_periodo:
+        print(
+            f"  Además se guardaron {cruce.pares_fuera_del_periodo} pares de otros meses: "
+            "el cruce mira todos los movimientos libres, no solo los de este mes."
+        )
 
 
 def _reparar_integridad(confirmar: bool, settings: Settings) -> None:
