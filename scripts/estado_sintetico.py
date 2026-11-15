@@ -13,7 +13,7 @@ ahí no puede colarse un estado real.
 salida es la tabla de `docs/conciliacion.md` (un test las compara).
 
 `--base` crea una base nueva (se niega si el archivo existe) con gastos
-inventados de marzo y mayo y los estados de marzo, abril y mayo ya importados.
+inventados y los estados de marzo a julio ya importados.
 Algunos gastos calzan con un movimiento el mismo día, otros a uno o tres días,
 uno a cuatro, y hay movimientos sin gasto y gastos en efectivo sin movimiento.
 
@@ -102,8 +102,15 @@ SEMANA = "mismo_monto_misma_semana"
 DESFASE = "fecha_desfasada"
 SIN_GASTO = "movimiento_sin_gasto"
 PARTIDO = "pago_partido"
-FALLOS_ESPERADOS = {PARTIDO}
-"""Casos que el cruce uno a uno no resuelve: un cargo con varios gastos o al revés."""
+DIARIO = "diario_desfasado"
+GEMELOS = "gemelos_otro_comercio"
+VACIAS = "palabras_vacias"
+CRUZA_MES = "cruza_de_mes"
+FALLOS_ESPERADOS = {PARTIDO, GEMELOS}
+"""Casos donde no unir es lo esperado: un cargo con varios gastos o al revés (el
+uno a uno no lo resuelve), y dos cargos iguales de comercios distintos con un
+gasto cuyo texto no dice de cuál es (unir sería adivinar). Solo se marcan las
+filas que tienen gasto verdadero; no entran al recall."""
 
 # Etiquetas de cada fila de MARZO y ABRIL, en el mismo orden. Los ids de gasto son
 # la posición (desde 1) en GASTOS: así los guarda la base. El gasto 6 (taxi en
@@ -192,9 +199,54 @@ MAYO_ESPEC: list[tuple[Fila, tuple[tuple[str, ...], str]]] = [
 ]
 MAYO: list[Fila] = [fila for fila, _ in MAYO_ESPEC]
 
+# Junio y julio: los cuatro fallos que reprodujo la revisión de las reglas (B5 a B8).
+# Entraron al set antes de cambiar las reglas; el criterio está en docs/conciliacion.md.
+JUNIO_GASTOS: dict[str, tuple[date, str, str, str]] = {
+    # Los ids siguen a los de MAYO_GASTOS.
+    # B6: el mismo almuerzo cuatro días seguidos; el banco cobra cada uno al día siguiente.
+    "comedor1": (date(2026, 6, 8), "6.50", "comida_fuera", "almuerzo"),
+    "comedor2": (date(2026, 6, 9), "6.50", "comida_fuera", "almuerzo"),
+    "comedor3": (date(2026, 6, 10), "6.50", "comida_fuera", "almuerzo"),
+    "comedor4": (date(2026, 6, 11), "6.50", "comida_fuera", "almuerzo"),
+    # B5: fue en la ferretería, pero el texto no lo dice.
+    "arreglo": (date(2026, 6, 15), "23.00", "otros", "arreglo de la casa"),
+    # B7: en efectivo; solo comparten palabras vacías con un cargo del mismo monto.
+    "encomienda": (date(2026, 6, 15), "31.20", "otros", "encomienda a quito"),
+    "regalo_hermana": (date(2026, 6, 17), "19.40", "personal", "regalo para mi hermana"),
+    "curso": (date(2026, 6, 18), "27.00", "educacion", "curso online, compra de materiales"),
+    # B8: el café del 1 de julio. El del 30 de junio no se registró.
+    "cafe_julio": (date(2026, 7, 1), "4.80", "comida_fuera", "cafe"),
+}
+
+JUNIO_ESPEC: list[tuple[Fila, tuple[tuple[str, ...], str]]] = [
+    ((date(2026, 6, 3), "TRANSFERENCIA RECIBIDA NOMINA", 120_000), ((), SIN_GASTO)),
+    ((date(2026, 6, 9), "COMEDOR SINTETICO", -650), (("comedor1",), DIARIO)),
+    ((date(2026, 6, 10), "COMEDOR SINTETICO", -650), (("comedor2",), DIARIO)),
+    ((date(2026, 6, 11), "COMEDOR SINTETICO", -650), (("comedor3",), DIARIO)),
+    ((date(2026, 6, 12), "COMEDOR SINTETICO", -650), (("comedor4",), DIARIO)),
+    ((date(2026, 6, 15), "FARMACIA SINTETICA", -2300), ((), GEMELOS)),
+    ((date(2026, 6, 15), "FERRETERIA SINTETICA", -2300), (("arreglo",), GEMELOS)),
+    ((date(2026, 6, 22), "COMPRA ONLINE QUITO", -3120), ((), VACIAS)),
+    ((date(2026, 6, 24), "PAGO PARA SERVICIOS", -1940), ((), VACIAS)),
+    ((date(2026, 6, 26), "COMPRA ONLINE SINTETICA", -2700), ((), VACIAS)),
+    ((date(2026, 6, 30), "CAFETERIA SINTETICA", -480), ((), CRUZA_MES)),
+]
+JUNIO: list[Fila] = [fila for fila, _ in JUNIO_ESPEC]
+
+JULIO_ESPEC: list[tuple[Fila, tuple[tuple[str, ...], str]]] = [
+    ((date(2026, 7, 1), "CAFETERIA SINTETICA", -480), (("cafe_julio",), CRUZA_MES)),
+    ((date(2026, 7, 31), "MANTENIMIENTO DE CUENTA", -150), ((), "comision")),
+]
+JULIO: list[Fila] = [fila for fila, _ in JULIO_ESPEC]
+
+GASTOS_CON_CLAVE = {**MAYO_GASTOS, **JUNIO_GASTOS}
+assert len(GASTOS_CON_CLAVE) == len(MAYO_GASTOS) + len(JUNIO_GASTOS), "claves repetidas"
+
 MARZO_DESDE, MARZO_HASTA = date(2026, 3, 1), date(2026, 3, 31)
 MAYO_DESDE, MAYO_HASTA = date(2026, 5, 1), date(2026, 5, 31)
 ABRIL_DESDE, ABRIL_HASTA = date(2026, 4, 1), date(2026, 4, 30)
+JUNIO_DESDE, JUNIO_HASTA = date(2026, 6, 1), date(2026, 6, 30)
+JULIO_DESDE, JULIO_HASTA = date(2026, 7, 1), date(2026, 7, 31)
 
 ENCABEZADO = ["Fecha", "Descripción", "Monto", "Saldo"]
 ENCABEZADO_PARES = ["estado", "movimiento", "gasto_id", "categoria_caso", "fallo_esperado"]
@@ -310,8 +362,19 @@ ENORME = "archivo_enorme.csv"
 _SALDOS = (SALDO_INICIAL, _final(MARZO, SALDO_INICIAL))
 _SALDOS_ABRIL = (_SALDOS[1], _final(ABRIL, _SALDOS[1]))
 _SALDOS_MAYO = (_SALDOS_ABRIL[1], _final(MAYO, _SALDOS_ABRIL[1]))
-MAYO_CSV = "mayo.csv"
-"""Solo lo usan la base sintética y los pares: no se versiona, `archivos()` no lo trae."""
+_SALDOS_JUNIO = (_SALDOS_MAYO[1], _final(JUNIO, _SALDOS_MAYO[1]))
+_SALDOS_JULIO = (_SALDOS_JUNIO[1], _final(JULIO, _SALDOS_JUNIO[1]))
+MAYO_CSV, JUNIO_CSV, JULIO_CSV = "mayo.csv", "junio.csv", "julio.csv"
+"""Solo los usan la base sintética y los pares: no se versionan, `archivos()` no los trae."""
+
+ESTADOS_BASE: list[tuple[str, date, date, tuple[int, int]]] = [
+    ("marzo.csv", MARZO_DESDE, MARZO_HASTA, _SALDOS),
+    ("abril.csv", ABRIL_DESDE, ABRIL_HASTA, _SALDOS_ABRIL),
+    (MAYO_CSV, MAYO_DESDE, MAYO_HASTA, _SALDOS_MAYO),
+    (JUNIO_CSV, JUNIO_DESDE, JUNIO_HASTA, _SALDOS_JUNIO),
+    (JULIO_CSV, JULIO_DESDE, JULIO_HASTA, _SALDOS_JULIO),
+]
+"""Los estados de la base sintética, en orden: archivo, periodo y saldos declarados."""
 
 
 @dataclass(frozen=True)
@@ -568,7 +631,7 @@ def tabla() -> str:
 def gastos_sinteticos() -> list[tuple[date, str, str, str]]:
     """Fecha, monto, categoría y descripción de cada gasto de la base, en orden de id (desde 1)."""
     marzo = [(date(2026, 3, dia), monto, cat, desc) for dia, monto, cat, desc in GASTOS]
-    return marzo + list(MAYO_GASTOS.values())
+    return marzo + list(GASTOS_CON_CLAVE.values())
 
 
 def pares_verdaderos() -> bytes:
@@ -579,17 +642,18 @@ def pares_verdaderos() -> bytes:
     "ninguno", un id o varios con "|" (un cargo que son varios gastos).
     """
     clave_a_id = {
-        clave: len(GASTOS) + posicion for posicion, clave in enumerate(MAYO_GASTOS, start=1)
+        clave: len(GASTOS) + posicion for posicion, clave in enumerate(GASTOS_CON_CLAVE, start=1)
     }
+
+    def etiquetas(espec: list[tuple[Fila, tuple[tuple[str, ...], str]]]) -> list[Etiqueta]:
+        return [(tuple(clave_a_id[c] for c in claves), caso) for _, (claves, caso) in espec]
+
     estados: list[tuple[str, list[Fila], list[Etiqueta], int]] = [
         ("2026-03", MARZO, ETIQUETAS_MARZO, 0),
         ("2026-04", ABRIL, ETIQUETAS_ABRIL, 0),
-        (
-            "2026-05",
-            MAYO,
-            [(tuple(clave_a_id[c] for c in claves), caso) for _, (claves, caso) in MAYO_ESPEC],
-            0,
-        ),
+        ("2026-05", MAYO, etiquetas(MAYO_ESPEC), 0),
+        ("2026-06", JUNIO, etiquetas(JUNIO_ESPEC), 0),
+        ("2026-07", JULIO, etiquetas(JULIO_ESPEC), 0),
     ]
     filas: list[list[str]] = [list(ENCABEZADO_PARES)]
     con_movimiento: set[int] = set()
@@ -598,7 +662,7 @@ def pares_verdaderos() -> bytes:
         assert [f for f, _, _ in movimientos] == sorted(f for f, _, _ in movimientos), periodo
         for indice, (ids, caso) in enumerate(etiquetas):
             con_movimiento.update(ids)
-            fallo = "si" if caso in FALLOS_ESPERADOS else "no"
+            fallo = "si" if caso in FALLOS_ESPERADOS and ids else "no"
             gasto = "|".join(map(str, ids)) or "ninguno"
             # La línea 1 es el encabezado del CSV del banco.
             filas.append([periodo, str(indice + 2), gasto, caso, fallo])
@@ -609,7 +673,7 @@ def pares_verdaderos() -> bytes:
 
 
 def base_sintetica(ruta: Path) -> tuple[int, int]:
-    """Una base nueva del bot con gastos inventados y marzo, abril y mayo importados.
+    """Una base nueva del bot con gastos inventados y los estados de marzo a julio importados.
 
     Devuelve cuántos gastos y cuántos movimientos quedaron. Nunca escribe sobre
     una base que ya existe.
@@ -641,12 +705,13 @@ def base_sintetica(ruta: Path) -> tuple[int, int]:
     movimientos = 0
     with tempfile.TemporaryDirectory() as temporal:
         preparar(Path(temporal))
-        (Path(temporal) / MAYO_CSV).write_bytes(_punto(_con_saldo(MAYO, _SALDOS_ABRIL[1])))
-        for archivo, desde, hasta, (anterior, final) in (
-            ("marzo.csv", MARZO_DESDE, MARZO_HASTA, _SALDOS),
-            ("abril.csv", ABRIL_DESDE, ABRIL_HASTA, _SALDOS_ABRIL),
-            (MAYO_CSV, MAYO_DESDE, MAYO_HASTA, _SALDOS_MAYO),
+        for archivo, filas, saldos in (
+            (MAYO_CSV, MAYO, _SALDOS_MAYO),
+            (JUNIO_CSV, JUNIO, _SALDOS_JUNIO),
+            (JULIO_CSV, JULIO, _SALDOS_JULIO),
         ):
+            (Path(temporal) / archivo).write_bytes(_punto(_con_saldo(filas, saldos[0])))
+        for archivo, desde, hasta, (anterior, final) in ESTADOS_BASE:
             movimientos += importar_estado(
                 Path(temporal) / archivo,
                 bancos.bancos["banco_sintetico"],
@@ -669,7 +734,7 @@ def main() -> None:
             raise SystemExit("Falta la ruta: --base RUTA")
         ruta = Path(sys.argv[sys.argv.index("--base") + 1])
         gastos, movimientos = base_sintetica(ruta)
-        print(f"{ruta}: {gastos} gastos y {movimientos} movimientos sintéticos (marzo y abril)")
+        print(f"{ruta}: {gastos} gastos y {movimientos} movimientos sintéticos (marzo a julio)")
     else:
         preparar(DESTINO)
         DESTINO_PARES.write_bytes(pares_verdaderos())

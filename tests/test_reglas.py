@@ -58,14 +58,19 @@ class Base:
         self._linea = 1
 
     def mov(
-        self, dia: int, centavos: int, descripcion: str = "MOVIMIENTO", tipo: str = "debito"
+        self,
+        dia: int,
+        centavos: int,
+        descripcion: str = "MOVIMIENTO",
+        tipo: str = "debito",
+        mes: int = 3,
     ) -> int:
         self._linea += 1
         with Session(self.engine) as sesion, sesion.begin():
             fila = Movimiento(
                 estado_id=self.estado,
                 linea=self._linea,
-                fecha=date(2026, 3, dia),
+                fecha=date(2026, mes, dia),
                 descripcion=descripcion,
                 monto_centavos=centavos,
                 tipo=tipo,
@@ -81,13 +86,14 @@ class Base:
         descripcion: str = "algo",
         subcategoria: str | None = None,
         texto: str | None = None,
+        mes: int = 3,
     ) -> int:
         with Session(self.engine) as sesion, sesion.begin():
             fila = Gasto(
                 monto_centavos=centavos,
                 categoria="otros",
                 atribuido_a="demian",
-                fecha=date(2026, 3, dia),
+                fecha=date(2026, mes, dia),
                 descripcion=descripcion,
                 subcategoria=subcategoria,
                 texto_original=texto if texto is not None else descripcion,
@@ -447,6 +453,142 @@ def test_el_cruce_cuenta_los_debitos_que_quedaron_sin_conciliar(base: Base) -> N
     cruce = conciliar(base.engine, GENERICAS)
     assert (len(cruce.pares), cruce.sin_conciliar) == (1, 1)
     assert cruce.por_regla == {"monto_y_fecha": 1, "monto_3_dias": 0, "monto_y_descripcion": 0}
+
+
+# --- B8: el resultado no depende del mes que se concilia primero ----------
+
+MARZO = {"desde": date(2026, 3, 1), "hasta": date(2026, 3, 31)}
+ABRIL = {"desde": date(2026, 4, 1), "hasta": date(2026, 4, 30)}
+
+
+@pytest.mark.parametrize("orden", [(MARZO, ABRIL), (ABRIL, MARZO), ({},)], ids=str)
+def test_cualquier_orden_de_meses_da_los_mismos_pares(
+    base: Base, orden: tuple[dict[str, date], ...]
+) -> None:
+    """El cargo del 30 de marzo no se lleva el gasto del 1 de abril, que tiene su propio cargo."""
+    base.mov(30, -480, "CAFETERIA")
+    m_abril = base.mov(1, -480, "CAFETERIA", mes=4)
+    g = base.gasto(1, 480, "cafe", mes=4)
+    m_desfasado = base.mov(31, -900, "TAXI")
+    g_desfasado = base.gasto(2, 900, "taxi", mes=4)
+    for periodo in orden:
+        base.conciliar(**periodo)
+    assert base.pares() == [
+        (m_abril, g, "monto_y_fecha"),
+        (m_desfasado, g_desfasado, "monto_3_dias"),
+    ]
+
+
+def test_el_mes_solo_filtra_lo_que_se_muestra(base: Base) -> None:
+    """Se cruza todo lo que está libre; `desde` y `hasta` acotan lo que devuelve el cruce."""
+    m_marzo, g_marzo = base.mov(5, -1550), base.gasto(5, 1550)
+    m_abril, g_abril = base.mov(7, -700, mes=4), base.gasto(7, 700, mes=4)
+    base.mov(9, -333, mes=4)
+    cruce = conciliar(base.engine, GENERICAS, **MARZO)
+    assert [(p.movimiento_id, p.gasto_id) for p in cruce.pares] == [(m_marzo, g_marzo)]
+    assert cruce.sin_conciliar == 0  # el débito libre es de abril
+    assert cruce.pares_fuera_del_periodo == 1
+    assert base.pares() == [
+        (m_marzo, g_marzo, "monto_y_fecha"),
+        (m_abril, g_abril, "monto_y_fecha"),
+    ]
+    assert conciliar(base.engine, GENERICAS, **ABRIL).pares == ()  # ya estaba guardado
+
+
+# --- B6: el mismo monto varios días seguidos ------------------------------
+
+
+def test_gastos_diarios_iguales_cobrados_al_dia_siguiente(base: Base) -> None:
+    """Menor distancia total: cada cargo con el gasto de la víspera, y no queda ninguno suelto."""
+    movimientos = [base.mov(dia, -650, "COMEDOR") for dia in (9, 10, 11, 12)]
+    gastos = [base.gasto(dia, 650, "almuerzo") for dia in (8, 9, 10, 11)]
+    nuevos, empatados = base.conciliar()
+    assert nuevos == [(m, g, "monto_3_dias") for m, g in zip(movimientos, gastos, strict=True)]
+    assert empatados == ()
+
+
+def test_dos_gastos_iguales_cobrados_los_dos_despues_se_unen_en_orden(base: Base) -> None:
+    """En orden o cruzados suman los mismos días: gana el orden de fechas."""
+    m1, m2 = base.mov(4, -450), base.mov(5, -450)
+    g1, g2 = base.gasto(2, 450), base.gasto(3, 450)
+    assert base.conciliar() == ([(m1, g1, "monto_3_dias"), (m2, g2, "monto_3_dias")], ())
+
+
+def test_cargos_y_gastos_alternados_se_unen_por_menor_distancia(base: Base) -> None:
+    """Gasto, cargo, gasto, cargo: cada cargo queda a un día de los dos gastos."""
+    m1, m2 = base.mov(21, -1200), base.mov(23, -1200)
+    g1, g2 = base.gasto(20, 1200), base.gasto(22, 1200)
+    assert base.conciliar() == ([(m1, g1, "monto_3_dias"), (m2, g2, "monto_3_dias")], ())
+
+
+def test_si_sobra_un_cargo_y_no_se_sabe_cual_no_se_une_ninguno(base: Base) -> None:
+    """Tres cargos en días distintos y dos gastos: dos asignaciones igual de buenas."""
+    movimientos = (base.mov(4, -450), base.mov(6, -450), base.mov(8, -450))
+    base.gasto(5, 450)
+    base.gasto(7, 450)
+    assert base.conciliar() == ([], movimientos)
+
+
+# --- B5: dos cargos iguales de comercios distintos -------------------------
+
+
+def test_gemelos_de_comercios_distintos_y_un_gasto_que_no_distingue(base: Base) -> None:
+    """Ya no decide el orden del archivo: el que sobra es un comercio u otro."""
+    m1, m2 = base.mov(15, -2300, "FARMACIA SINTETICA"), base.mov(15, -2300, "FERRETERIA SINTETICA")
+    base.gasto(15, 2300, "arreglo de la casa")
+    assert base.conciliar() == ([], (m1, m2))
+    assert base.pares() == []
+
+
+def test_gemelos_de_comercios_distintos_y_el_gasto_nombra_a_uno(base: Base) -> None:
+    base.mov(15, -2300, "FARMACIA SINTETICA")
+    m2 = base.mov(15, -2300, "FERRETERIA SINTETICA")
+    g = base.gasto(15, 2300, "pintura en la ferreteria")
+    assert base.conciliar() == ([(m2, g, "monto_y_fecha")], ())
+
+
+def test_gemelos_de_comercios_distintos_y_dos_gastos_que_no_distinguen(base: Base) -> None:
+    """Los cuatro quedarían conciliados, pero no se sabe qué gasto fue en cada comercio."""
+    m1, m2 = base.mov(15, -2300, "FARMACIA SINTETICA"), base.mov(15, -2300, "FERRETERIA SINTETICA")
+    base.gasto(15, 2300, "algo")
+    base.gasto(15, 2300, "otra cosa")
+    assert base.conciliar() == ([], (m1, m2))
+
+
+def test_gemelos_de_comercios_distintos_y_cada_gasto_nombra_al_suyo(base: Base) -> None:
+    m1, m2 = base.mov(15, -2300, "FARMACIA SINTETICA"), base.mov(15, -2300, "FERRETERIA SINTETICA")
+    g1, g2 = base.gasto(15, 2300, "ferreteria"), base.gasto(15, 2300, "farmacia")
+    assert base.conciliar() == ([(m1, g2, "monto_y_fecha"), (m2, g1, "monto_y_fecha")], ())
+
+
+def test_una_palabra_generica_no_distingue_entre_gemelos(base: Base) -> None:
+    """ "compra" está en los dos lados, pero no dice nada del comercio."""
+    m1, m2 = base.mov(15, -2300, "COMPRA FARMACIA"), base.mov(15, -2300, "PAGO FERRETERIA")
+    base.gasto(15, 2300, "compra de algo")
+    assert base.conciliar() == ([], (m1, m2))
+
+
+# --- B7: la regla por descripción está apagada por defecto -----------------
+
+
+@pytest.mark.parametrize(
+    ("movimiento", "gasto"),
+    [
+        ("COMPRA ONLINE QUITO", "encomienda a quito"),
+        ("PAGO PARA SERVICIOS", "regalo para mi hermana"),
+        ("COMPRA ONLINE SINTETICA", "curso online, compra de materiales"),
+    ],
+)
+def test_por_defecto_no_se_une_por_descripcion(base: Base, movimiento: str, gasto: str) -> None:
+    """Los tres falsos positivos de la revisión: palabras vacías a más de tres días."""
+    base.mov(22, -3120, movimiento)
+    base.gasto(15, 3120, gasto)
+    assert base.conciliar() == ([], ())
+    assert "monto_y_descripcion" not in conciliar(base.engine, GENERICAS).por_regla
+
+
+def test_la_regla_por_descripcion_esta_apagada_en_el_yaml() -> None:
+    assert cargar_bancos().regla_descripcion is False
 
 
 # --- Palabras --------------------------------------------------------------

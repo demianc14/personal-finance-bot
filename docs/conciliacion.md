@@ -141,6 +141,34 @@ Quedaron 15 débitos sin conciliar, 2 de ellos por empate. Ningún par salió eq
 
 Las reglas no se tocaron después de ver estos resultados.
 
+### Revisión de las reglas: criterio congelado
+
+Una revisión adversarial reprodujo cuatro fallos en estas reglas. Antes de cambiarlas se agregaron los cuatro casos al set sintético (los estados de junio y julio, 16 filas nuevas en `evals/pares_verdaderos.csv`) y se escribió este criterio. El commit que lo trae no toca `conciliacion/reglas.py`.
+
+| Fallo | Caso en el set | Qué hacen las reglas de la PR #25 | Qué se espera |
+|---|---|---|---|
+| B8 | `cruza_de_mes`: cargo del 30 de junio sin gasto, cargo igual del 1 de julio con su gasto | Si junio se concilia primero, el cargo de junio se lleva el gasto de julio | El gasto se une al cargo del 1 de julio, en cualquier orden de meses |
+| B6 | `diario_desfasado`: el mismo almuerzo cuatro días seguidos, cobrado cada uno al día siguiente | Une tres por la misma fecha, todos corridos, y deja un cargo suelto | Los cuatro pares, cada cargo con el gasto de la víspera |
+| B5 | `gemelos_otro_comercio`: dos cargos iguales el mismo día, de una farmacia y una ferretería, y un gasto que dice "arreglo de la casa" | Une el gasto al primero del archivo (la farmacia) | Abstención: ninguno de los dos se une |
+| B7 | `palabras_vacias`: tres cargos y tres gastos en efectivo del mismo monto que solo comparten "quito", "para" o "compra online" | La regla 3 une los tres | Ningún par |
+
+El criterio de éxito, sobre el set completo y conciliando mes por mes:
+
+1. **Ningún par equivocado.**
+2. **Los 5 pares nuevos se encuentran** (4 de `diario_desfasado` y 1 de `cruza_de_mes`).
+3. **Abstención en `gemelos_otro_comercio`:** ninguno de los dos cargos se une, y los dos salen como empate.
+4. **Ningún par en `palabras_vacias`.**
+5. **Los 20 pares de la medición anterior siguen**, con el mismo gasto.
+6. **El orden de los meses no cambia nada:** conciliar de marzo a julio o de julio a marzo deja los mismos pares.
+
+La corrida de las reglas viejas sobre el set nuevo, antes de implementar, queda guardada como línea de base: 28 pares, 8 equivocados (precisión 71 %) y 2 pares distintos según el orden de los meses.
+
+```bash
+python scripts/medir_cruce.py
+```
+
+`scripts/medir_cruce.py` ahora concilia mes por mes, como se usa `--conciliar`, y repite todo con los meses al revés.
+
 ## Integridad de las conciliaciones
 
 Un par vigente solo une un gasto vigente con un movimiento vigente de un estado vigente, uno a uno. Lo sostienen tres cosas:
