@@ -175,6 +175,12 @@ DATOS = (
 """Formatos en los que podría colarse un estado de cuenta o un export con montos reales."""
 
 
+def _sinteticos() -> dict[str, bytes]:
+    """Lo que genera `scripts/estado_sintetico.py` para la carpeta: los CSV y los PDF."""
+    modulo = cargar()
+    return {**modulo.archivos(), **modulo.pdfs()}
+
+
 @pytest.mark.parametrize("nombre", ["marzo.csv", "pichincha.pdf"])
 def test_los_estados_sinteticos_si_se_versionan(nombre: str) -> None:
     result = subprocess.run(
@@ -206,7 +212,7 @@ def test_lo_unico_tabular_versionado_son_los_estados_sinteticos() -> None:
     archivos = subprocess.run(
         ["git", "ls-files", "-z"], cwd=ROOT, check=True, capture_output=True, text=True
     ).stdout.split("\0")
-    sinteticos = {f"{ESTADOS_SINTETICOS}/{nombre}" for nombre in cargar().archivos()}
+    sinteticos = {f"{ESTADOS_SINTETICOS}/{nombre}" for nombre in _sinteticos()}
     sinteticos.add(PARES_VERDADEROS)
     colados = [
         nombre
@@ -221,7 +227,7 @@ def test_cada_estado_de_la_carpeta_es_byte_a_byte_el_que_genera_el_script() -> N
 
     Si esto falla por un cambio en el generador: `python scripts/estado_sintetico.py`.
     """
-    esperados = cargar().archivos()
+    esperados = _sinteticos()
     en_disco = {ruta.name: ruta.read_bytes() for ruta in (ROOT / ESTADOS_SINTETICOS).iterdir()}
     assert en_disco.keys() == esperados.keys(), "sobran o faltan archivos en la carpeta"
     distintos = [nombre for nombre in esperados if en_disco[nombre] != esperados[nombre]]
@@ -242,6 +248,9 @@ def test_los_estados_sinteticos_solo_nombran_bancos_y_comercios_inventados() -> 
     }
     for _, descripcion, _ in [*modulo.MARZO, *modulo.ABRIL, *modulo.MAYO]:
         assert "SINTETIC" in descripcion or descripcion in genericas, descripcion
+    for _, _, descripcion, _ in [*modulo.PICHINCHA, *modulo._CRUZA_DICIEMBRE]:
+        assert "SINTETIC" in descripcion, descripcion
+    assert "SINTETICO" in modulo._TITULAR
 
 
 def test_los_pares_verdaderos_se_versionan_y_son_lo_que_genera_el_script() -> None:

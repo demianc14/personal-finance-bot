@@ -1,9 +1,10 @@
 """Estados de cuenta sintéticos: unos que cuadran y variantes hostiles que no.
 
 Todo es inventado y determinista (sin azar ni fecha de hoy): correrlo dos veces
-escribe los mismos bytes. `tests/test_privacy.py` exige que cada CSV versionado
-en `tests/fixtures/estados/` sea exactamente lo que genera este script, así que
-ahí no puede colarse un estado real.
+escribe los mismos bytes. `tests/test_privacy.py` exige que cada CSV y cada PDF
+de `tests/fixtures/estados/` sea exactamente lo que genera este script, así que
+ahí no puede colarse un estado real. Los PDF imitan la forma del export de
+Pichincha y todavía no tienen parser que los lea (`pdfs()`, `CASOS_PDF`).
 
     python scripts/estado_sintetico.py              # reescribe tests/fixtures/estados/ y los pares
     python scripts/estado_sintetico.py --tabla      # importa cada caso y muestra qué pasó
@@ -32,6 +33,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
+from typing import Any, NamedTuple
 
 from family_expense_bot.conciliacion.bancos import cargar_bancos
 from family_expense_bot.conciliacion.contrato import EstadoRechazado, plata
@@ -567,9 +569,9 @@ CASOS = [
 
 
 def preparar(carpeta: Path, con_enorme: bool = False) -> None:
-    """Escribe los CSV en `carpeta`. El enorme solo si se pide: no va al repo."""
+    """Escribe los CSV y los PDF en `carpeta`. El enorme solo si se pide: no va al repo."""
     carpeta.mkdir(parents=True, exist_ok=True)
-    for nombre, contenido in archivos().items():
+    for nombre, contenido in (archivos() | pdfs()).items():
         (carpeta / nombre).write_bytes(contenido)
     if con_enorme:
         marzo = archivos()["marzo.csv"]
@@ -726,6 +728,529 @@ def base_sintetica(ruta: Path) -> tuple[int, int]:
     return len(gastos_sinteticos()), movimientos
 
 
+# --- PDF con la forma del de Pichincha (G1b). Todavía no hay parser que los lea. ---
+#
+# El PDF se escribe a mano, sin dependencias: objetos, un content stream sin
+# comprimir y la tabla xref con los offsets reales. Sin /Info ni /ID (son
+# opcionales y traerían fecha o azar), así que dos corridas dan los mismos bytes.
+# La forma imita al export del banco, medida sobre un estado real en local y sin
+# copiar nada de su contenido (ver docs/conciliacion.md): una envoltura que
+# dibuja la página como Form XObject y escribe "Página N de M" en Helvetica, y
+# adentro un BT/Tm/Tf/rg/Tj/g/ET por celda, en ArialMT sin embeber. Los montos se
+# alinean con las mismas métricas (las de Arial son las de Helvetica).
+
+MESES_PICHINCHA = {
+    1: "ene.",
+    2: "feb.",
+    3: "mar.",
+    4: "abr.",
+    5: "may.",
+    6: "jun.",
+    7: "jul.",
+    8: "ago.",
+    9: "sep.",
+    10: "oct.",
+    11: "nov.",
+    12: "dic.",
+}
+"""Solo `oct.` y `nov.` están vistos en el real; el resto es la abreviatura común."""
+
+_ANCHOS = dict(
+    zip(
+        " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`"
+        "abcdefghijklmnopqrstuvwxyz{|}~",
+        [
+            278, 278, 355, 556, 556, 889, 667, 191, 333, 333, 389, 584, 278, 333, 278, 278,
+            *[556] * 10,
+            278, 278, 584, 584, 584, 556, 1015,
+            667, 667, 722, 722, 667, 611, 778, 722, 278, 500, 667, 556, 833, 722, 778, 667,
+            778, 722, 667, 611, 722, 667, 944, 667, 667, 611,
+            278, 278, 278, 469, 556, 333,
+            556, 556, 500, 556, 556, 278, 556, 556, 222, 222, 500, 222, 833, 556, 556, 556,
+            556, 333, 500, 278, 556, 500, 722, 500, 500, 500,
+            334, 260, 334, 584,
+        ],
+        strict=True,
+    )
+)  # fmt: skip
+_ANCHOS |= {"Á": 667, "É": 667, "Í": 278, "Ó": 778, "Ú": 722, "Ñ": 722}
+_ANCHOS |= {"á": 556, "é": 556, "í": 222, "ó": 556, "ú": 556, "ñ": 556}
+"""Métricas AFM de Helvetica, en milésimas del tamaño de la letra."""
+
+
+def _ancho(texto: str, tamano: float) -> float:
+    return sum(_ANCHOS[c] for c in texto) * tamano / 1000
+
+
+def _n(x: float) -> str:
+    """Un número del content stream, siempre igual: hasta dos decimales y sin ceros de más."""
+    return f"{x:.2f}".rstrip("0").rstrip(".")
+
+
+def _cadena(texto: str) -> bytes:
+    """Un string literal de PDF en WinAnsi (cp1252), con \\, ( y ) escapados."""
+    crudo = texto.encode("cp1252")
+    return b"(" + crudo.replace(b"\\", b"\\\\").replace(b"(", b"\\(").replace(b")", b"\\)") + b")"
+
+
+class Fragmento(NamedTuple):
+    """Un texto de la página, en la unidad que lo escribe el banco: un `Tj`."""
+
+    x: float | None
+    """None: sigue en la misma línea que el anterior, sin `Tm`."""
+    y: float
+    tamano: float
+    texto: str
+    negrita: bool = False
+    """El real la simula con `2 Tr` (relleno y trazo)."""
+    sigue: bool = False
+    """Va en el mismo BT que el anterior, como hace el real con una celda partida."""
+
+
+def _form(fragmentos: list[Fragmento]) -> bytes:
+    """El Form XObject de una página, con los mismos bloques que el real.
+
+    Un BT por celda (`Tm Tf [Tr] rg Tj g [Tr]`); lo que sigue en el mismo BT agrega
+    `[Tm] [Tr] rg Tj g [Tr]`. Abajo, una raya bajo cada fila y los dos bloques de
+    `Td` sin texto que el real trae en cada página.
+    """
+    partes = [b"BT\n0 0 Td\nET\n"]
+    for k, f in enumerate(fragmentos):
+        if not f.sigue:
+            partes.append(b"BT\n")
+        if f.x is not None:
+            partes.append(b"1 0 0 1 %s %s Tm\n" % (_n(f.x).encode(), _n(f.y).encode()))
+        if not f.sigue:
+            partes.append(b"/F1 %s Tf\n" % _n(f.tamano).encode())
+        partes.append(b"2 Tr\n" if f.negrita else b"")
+        partes.append(b"0 0 0 rg\n%sTj\n0 g\n" % _cadena(f.texto))
+        partes.append(b"0 Tr\n" if f.negrita else b"")
+        if k + 1 == len(fragmentos) or not fragmentos[k + 1].sigue:
+            partes.append(b"ET\n")
+    partes.append(b"BT\n1 0 0 1 50 792 Tm\n0 0 Td\n0 0 Td\nET\n")
+    filas = {
+        f.y for f in fragmentos if f.tamano == 9 and f.x is not None and f.x < 63.3 and f.y < 620
+    }
+    for y in sorted(filas, reverse=True):
+        y -= 4
+        partes.append(
+            b"q\n0.5 w\n0.8 G\n17 %s m\n578 %s l\nS\nQ\n" % (_n(y).encode(), _n(y).encode())
+        )
+    return b"".join(partes)
+
+
+def _envoltura(pagina: int, de: int) -> bytes:
+    """Lo que el real dibuja fuera del Form: el Form y "Página N de M" en Helvetica."""
+    pie = _cadena(f"Página {pagina} de {de}")
+    return (
+        b"q\nBT\n50 792 Td\nET\nQ\nq 1 0 0 1 0 0 cm /Xf1 Do Q\n"
+        b"BT\n/F1 10 Tf\n1 0 0 1 507 811 Tm\n" + pie + b"Tj\nET\n"
+    )
+
+
+def _pdf(paginas: list[tuple[bytes, int, int]]) -> bytes:
+    """Arma el archivo: cada página es (form, N, M) con el N y el M que dice su pie."""
+    anchos = " ".join(str(_ANCHOS.get(chr(c).encode("latin-1").decode("cp1252", "replace"), 556))
+                      for c in range(32, 251))  # fmt: skip
+    objetos: list[bytes] = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"",  # Pages: se llena al final, cuando se saben los ids de cada página
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+        b"<< /Type /Font /Subtype /TrueType /BaseFont /ArialMT /FirstChar 32 /LastChar 250 "
+        b"/Widths [" + anchos.encode() + b"] /Encoding /WinAnsiEncoding /FontDescriptor 5 0 R >>",
+        b"<< /Type /FontDescriptor /FontName /ArialMT /Flags 32 /FontBBox [-665 -325 2000 1006] "
+        b"/ItalicAngle 0 /Ascent 905 /Descent -212 /CapHeight 716 /StemV 80 >>",
+    ]
+    kids = []
+    for form, pagina, de in paginas:
+        base = len(objetos) + 1  # ids: página, envoltura, form
+        envoltura = _envoltura(pagina, de)
+        objetos.append(
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << "
+            b"/F1 3 0 R >> /XObject << /Xf1 %d 0 R >> >> /Contents %d 0 R >>" % (base + 2, base + 1)
+        )
+        objetos.append(b"<< /Length %d >>\nstream\n%sendstream" % (len(envoltura), envoltura))
+        objetos.append(
+            b"<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 595 842] "
+            b"/Matrix [1 0 0 1 0 0] /Resources << /Font << /F1 4 0 R >> >> /Length %d >>\n"
+            b"stream\n%sendstream" % (len(form), form)
+        )
+        kids.append(b"%d 0 R" % base)
+    objetos[1] = b"<< /Type /Pages /Kids [%s] /Count %d >>" % (b" ".join(kids), len(kids))
+
+    salida = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+    offsets = []
+    for numero, cuerpo in enumerate(objetos, start=1):
+        offsets.append(len(salida))
+        salida += b"%d 0 obj\n%s\nendobj\n" % (numero, cuerpo)
+    inicio_xref = len(salida)
+    salida += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objetos) + 1)
+    salida += b"".join(b"%010d 00000 n \n" % o for o in offsets)
+    salida += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (
+        len(objetos) + 1,
+        inicio_xref,
+    )
+    return bytes(salida)
+
+
+FilaPdf = tuple[date, str, str, int]
+"""Fecha, N.DOC, descripción y centavos con signo (negativo si sale plata)."""
+
+PICHINCHA_ANTERIOR = 52_310
+PICHINCHA_ULTIMO_CORTE, PICHINCHA_ESTE_CORTE = date(2026, 10, 2), date(2026, 11, 2)
+PICHINCHA: list[FilaPdf] = [
+    (date(2026, 10, 3), "1000101", "TRANSFERENCIA ENVIADA SINTETICA", -2500),
+    (date(2026, 10, 5), "1000102", "TRANSFERENCIA RECIBIDA SINTETICA", 15_000),
+    (date(2026, 10, 6), "1000103", "PAGO SERVICIO SINTETICO", -1875),
+    (date(2026, 10, 8), "1000104", "TRANSFERENCIA ENVIADA SINTETICA", -980),
+    (date(2026, 10, 9), "1000105", "COMPRA SUPERMERCADO SINTETICO", -6420),
+    (date(2026, 10, 12), "1000106", "TRANSFERENCIA ENVIADA SINTETICA", -350),
+    (date(2026, 10, 14), "1000107", "TRANSFERENCIA RECIBIDA SINTETICA", 4000),
+    (date(2026, 10, 15), "1000108", "COMISION SINTETICA", -45),
+    (date(2026, 10, 15), "1000109", "RETIRO CAJERO SINTETICO", -6000),
+    (date(2026, 10, 18), "1000110", "TRANSFERENCIA ENVIADA SINTETICA", -1210),
+    (date(2026, 10, 20), "1000111", "COMPRA FARMACIA SINTETICA", -1595),
+    (date(2026, 10, 22), "1000112", "TRANSFERENCIA ENVIADA SINTETICA", -700),
+    (date(2026, 10, 24), "1000113", "TRANSFERENCIA RECIBIDA SINTETICA", 2550),
+    (date(2026, 10, 26), "1000114", "TRANSFERENCIA ENVIADA SINTETICA", -4300),
+    (date(2026, 10, 28), "1000115", "PAGO SERVICIO SINTETICO", -2215),
+    (date(2026, 10, 30), "1000116", "TRANSFERENCIA ENVIADA SINTETICA", -125),
+    (date(2026, 11, 1), "1000117", "TRANSFERENCIA ENVIADA SINTETICA", -1890),
+]
+
+# Cada columna empieza donde el real deja una celda vacía de 5 pt bajo la tabla.
+_BORDES = (17, 63.3, 109.6, 155.9, 387.5, 452.3, 517.2)
+_ENCABEZADO_X = (
+    ("FECHA", 22.9),
+    ("OFIC.", 72.5),
+    ("N.DOC.", 115),
+    ("DESCRIPCION", 238.5),
+    ("DEBITO", 401.0),
+    ("CREDITO", 463.0),
+    ("SALDO", 532.0),
+)
+_FILA, _FILA_PARTIDA, _PRIMERA_FILA, _ULTIMA_Y = 13.0, 22.0, 612.0, 150.0
+_TITULAR, _CI, _CUENTA = "TITULAR SINTETICO", "0000000000", "9900000001"
+
+
+def _fecha_pichincha(fecha: date) -> str:
+    return f"{fecha.day:02d}-{MESES_PICHINCHA[fecha.month]}"
+
+
+def _cabecera(numero_ciclo: int = 1) -> list[Fragmento]:
+    """Lo que el real repite arriba de cada página de detalle, con datos inventados."""
+    return [
+        Fragmento(27, 696, 12, _TITULAR, True),
+        Fragmento(420.6, 696, 12, " "),
+        Fragmento(None, 696, 12, "C.I./RUC: ", True, sigue=True),
+        Fragmento(None, 696, 12, " ", sigue=True),
+        Fragmento(None, 696, 12, _CI, sigue=True),
+        Fragmento(27, 674, 12, f"CUENTA: {_CUENTA}"),
+        Fragmento(420.6, 674, 12, f"CICLO {numero_ciclo}"),
+        Fragmento(223.3, 643, 11, "DETALLE DE MOVIMIENTOS"),
+        *[Fragmento(x, 625, 9, rotulo, True) for rotulo, x in _ENCABEZADO_X],
+    ]
+
+
+_TITULO = Fragmento(397.3, 784, 17, "ESTADO DE CUENTA")
+"""El real lo dibuja al final de cada página."""
+
+
+_AVISO = "Documento sintético para pruebas del parser: no es un estado de cuenta real."
+
+
+def _celdas_fila(y: float, celdas: list[str]) -> list[Fragmento]:
+    """Una fila como la dibuja el real: fecha centrada, montos a la derecha, saldo centrado."""
+    fecha, oficina, doc, descripcion, debito, credito, saldo = celdas
+    return [
+        Fragmento(37.9 - _ancho(fecha, 9) / 2, y, 9, fecha),
+        Fragmento(66, y, 9, oficina),
+        Fragmento(111, y, 9, doc),
+        Fragmento(159, y, 9, descripcion),
+        Fragmento(445.5 - _ancho(debito, 9), y, 9, debito),
+        Fragmento(510.5 - _ancho(credito, 9), y, 9, credito),
+        Fragmento(547.6 - _ancho(saldo, 9) / 2, y, 9, saldo),
+    ]
+
+
+def _paginas_detalle(
+    filas: list[FilaPdf],
+    anterior: int,
+    *,
+    textos: dict[tuple[int, int], str] | None = None,
+    correr: dict[tuple[int, int], float] | None = None,
+    partir_en: int | None = None,
+) -> list[list[Fragmento]]:
+    """Las páginas de detalle: una fila por movimiento, con saldo corrido.
+
+    `textos` cambia el texto de una celda, (fila, columna) → texto; un monto se
+    vuelve a alinear a la derecha. `correr` mueve una celda en x. `partir_en`
+    corta esa fila entre dos páginas: fecha, oficina y N.DOC al pie de una y el
+    resto arriba de la siguiente. Un N.DOC de nueve dígitos se parte como en el
+    real: el último dígito va 9 pt más abajo, justo después de la celda, y la
+    fila ocupa 22 pt en vez de 13.
+    """
+    textos, correr = textos or {}, correr or {}
+    paginas: list[list[Fragmento]] = []
+    pagina, y, saldo = _cabecera(), _PRIMERA_FILA, anterior
+
+    def cerrar() -> None:
+        nonlocal pagina, y
+        paginas.append([*pagina, *_rayas_y_pie(y), _TITULO])
+        pagina, y = _cabecera(), _PRIMERA_FILA
+
+    for indice, (fecha, doc, descripcion, centavos) in enumerate(filas):
+        saldo += centavos
+        alto = _FILA_PARTIDA if len(doc) > 8 else _FILA
+        if y - alto < _ULTIMA_Y:
+            cerrar()
+        celdas = [
+            _fecha_pichincha(fecha),
+            "99",
+            doc[:8],
+            descripcion,
+            plata(-centavos) if centavos < 0 else "0.00",
+            plata(centavos) if centavos > 0 else "0.00",
+            plata(saldo),
+        ]
+        for (fila, columna), texto in textos.items():
+            if fila == indice:
+                celdas[columna] = texto
+        fragmentos = _celdas_fila(y, celdas)
+        for (fila, columna), dx in correr.items():
+            if fila == indice:
+                celda = fragmentos[columna]
+                fragmentos[columna] = celda._replace(x=(celda.x or 0) + dx)
+        if len(doc) > 8:
+            fragmentos.insert(3, Fragmento(111, y - 9, 9, doc[8:], sigue=True))
+        if indice == partir_en:
+            pagina += fragmentos[:3]
+            cerrar()
+            pagina += [f._replace(y=y) for f in fragmentos[3:]]
+        else:
+            pagina += fragmentos
+        y -= alto
+    cerrar()
+    return paginas
+
+
+def _rayas_y_pie(y: float) -> list[Fragmento]:
+    """Bajo la tabla, el real deja una celda vacía de 5 pt al borde de cada columna."""
+    return [*[Fragmento(x, y - 9, 5, "") for x in _BORDES], Fragmento(79.9, 125, 7, _AVISO)]
+
+
+def _resumen(
+    ultimo: date,
+    este: date,
+    anterior: int,
+    filas: list[FilaPdf],
+    conteos: tuple[int, int] | None = None,
+    totales: tuple[int, int] | None = None,
+) -> list[Fragmento]:
+    """La página 1: cortes y la conciliación del banco. `conteos`/`totales` los fuerzan."""
+    creditos = [c for _, _, _, c in filas if c > 0]
+    debitos = [-c for _, _, _, c in filas if c < 0]
+    n_cred, n_deb = conteos or (len(creditos), len(debitos))
+    t_cred, t_deb = totales or (sum(creditos), sum(debitos))
+    actual = anterior + t_cred - t_deb
+    corte = f"{ultimo:%d-%m-%Y}", f"{este:%d-%m-%Y}"
+
+    def monto(y: float, centavos: int) -> Fragmento:
+        texto = plata(centavos)
+        return Fragmento(567 - _ancho(texto, 9), y, 9, texto)
+
+    filas_resumen: list[tuple[str, str, int]] = [
+        ("SALDO ANTERIOR", "", anterior),
+        ("DEPÓSITO / CRÉDITOS", f"({n_cred})", t_cred),
+        ("CHEQUES / DÉBITOS", f"({n_deb})", t_deb),
+        ("INTERÉS PERIODO", "", 0),
+        ("SALDO ACTUAL", "", actual),
+        ("SALDO PROMEDIO EFECTIVO", "", (anterior + actual) // 2),
+    ]
+    fragmentos: list[Fragmento] = [
+        Fragmento(23, 704, 10, _TITULAR, True),
+        Fragmento(23, 690, 10, f"CUENTA {_CUENTA}", True),
+        Fragmento(23, 646, 10, "CICLO 1"),
+        Fragmento(23, 632, 10, f"C.I./RUC: {_CI}", True),
+        Fragmento(308.4, 703, 10, "FECHA ÚLTIMO CORTE (FACTURA)"),
+        Fragmento(521.9, 703, 10, corte[0]),
+        Fragmento(308.4, 687, 10, "FECHA ESTE CORTE"),
+        Fragmento(521.9, 687, 10, corte[1]),
+        Fragmento(313.4, 474.9, 10, "CONCILIACIÓN", True),
+        Fragmento(314.4, 452.4, 9, "FECHA ÚLTIMO CORTE (FACTURA)"),
+        Fragmento(478.6, 452.4, 9, ""),
+        Fragmento(521, 452.4, 9, corte[0]),
+        Fragmento(314.4, 434.9, 9, "FECHA ESTE CORTE (FACTURA)"),
+        Fragmento(478.6, 434.9, 9, ""),
+        Fragmento(521, 434.9, 9, corte[1]),
+    ]
+    for k, (rotulo, conteo, centavos) in enumerate(filas_resumen):
+        y = 417.4 - 17.5 * k
+        fragmentos += [Fragmento(314.4, y, 9, rotulo), Fragmento(478.6, y, 9, conteo)]
+        fragmentos.append(monto(y, centavos))
+    fragmentos += [Fragmento(79.9, 285.9, 7, _AVISO), _TITULO]
+    return fragmentos
+
+
+def _estado_pdf(
+    filas: list[FilaPdf],
+    *,
+    ultimo: date = PICHINCHA_ULTIMO_CORTE,
+    este: date = PICHINCHA_ESTE_CORTE,
+    anterior: int = PICHINCHA_ANTERIOR,
+    resumen_de: list[FilaPdf] | None = None,
+    conteos: tuple[int, int] | None = None,
+    repetir: int | None = None,
+    **detalle: Any,
+) -> bytes:
+    """Un estado completo: resumen, detalle y una última página solo con título y pie.
+
+    `resumen_de` arma el resumen con otras filas que el detalle. `repetir` vuelve
+    a meter esa página (desde 1) justo después de sí misma, con su mismo pie: así
+    queda un PDF unido a mano. Lo demás va a `_paginas_detalle`.
+    """
+    paginas = [_resumen(ultimo, este, anterior, resumen_de or filas, conteos)]
+    paginas += _paginas_detalle(filas, anterior, **detalle)
+    paginas.append([_TITULO])
+    total = len(paginas)
+    numeradas = [(_form(p), n, total) for n, p in enumerate(paginas, start=1)]
+    if repetir is not None:
+        numeradas.insert(repetir, numeradas[repetir - 1])
+    return _pdf(numeradas)
+
+
+def _final_pdf(filas: list[FilaPdf], anterior: int) -> int:
+    return anterior + sum(c for _, _, _, c in filas)
+
+
+@dataclass(frozen=True)
+class CasoPdf:
+    """Un PDF sintético y lo que debería pasar con él cuando exista el parser.
+
+    `deberia` está anotado a mano, no medido: todavía no hay quien lea el PDF.
+    """
+
+    nombre: str
+    que: str
+    deberia: str
+    """"entra" o "rechazo"."""
+    ultimo_corte: date = PICHINCHA_ULTIMO_CORTE
+    este_corte: date = PICHINCHA_ESTE_CORTE
+    saldos: tuple[int, int] = (PICHINCHA_ANTERIOR, _final_pdf(PICHINCHA, PICHINCHA_ANTERIOR))
+    """Saldo anterior y actual en centavos, como los declararía quien importa."""
+
+    @property
+    def archivo(self) -> str:
+        return f"{self.nombre}.pdf"
+
+
+_DOC_PARTIDO = [
+    (f, f"{doc}12" if k in (3, 4, 11) else doc, d, c) for k, (f, doc, d, c) in enumerate(PICHINCHA)
+]
+_EN_CORTE = [
+    (PICHINCHA_ULTIMO_CORTE, "1000100", "TRANSFERENCIA ENVIADA SINTETICA", -500),
+    *PICHINCHA,
+    (PICHINCHA_ESTE_CORTE, "1000118", "PAGO SERVICIO SINTETICO", -1000),
+]
+_DIC_ULTIMO, _DIC_ESTE = date(2026, 12, 14), date(2027, 1, 14)
+_CRUZA_DICIEMBRE: list[FilaPdf] = [
+    (date(2026, 12, 15), "1000201", "TRANSFERENCIA RECIBIDA SINTETICA", 15_000),
+    (date(2026, 12, 18), "1000202", "COMPRA SUPERMERCADO SINTETICO", -7350),
+    (date(2026, 12, 24), "1000203", "TRANSFERENCIA ENVIADA SINTETICA", -2000),
+    (date(2026, 12, 31), "1000204", "PAGO SERVICIO SINTETICO", -1875),
+    (date(2027, 1, 3), "1000205", "TRANSFERENCIA ENVIADA SINTETICA", -640),
+    (date(2027, 1, 10), "1000206", "COMPRA FARMACIA SINTETICA", -1190),
+]
+_SALDOS_DIC = (PICHINCHA_ANTERIOR, _final_pdf(_CRUZA_DICIEMBRE, PICHINCHA_ANTERIOR))
+_DICIEMBRE = {"ultimo_corte": _DIC_ULTIMO, "este_corte": _DIC_ESTE, "saldos": _SALDOS_DIC}
+_CON_MILES = [(f, doc, d, 120_000 if k == 1 else c) for k, (f, doc, d, c) in enumerate(PICHINCHA)]
+_SALDOS_MILES = (PICHINCHA_ANTERIOR, _final_pdf(_CON_MILES, PICHINCHA_ANTERIOR))
+
+CASOS_PDF = [
+    CasoPdf(
+        "pichincha", "Estado que cuadra: resumen, una página de detalle y la última vacía", "entra"
+    ),
+    CasoPdf(
+        "pichincha_doc_partido",
+        "Tres N.DOC de nueve dígitos con el último dígito en la línea de abajo, como el real",
+        "entra",
+    ),
+    CasoPdf(
+        "pichincha_columna_desplazada",
+        "El débito de una fila corrido 65 pt, dentro de la columna de crédito",
+        "rechazo",
+    ),
+    CasoPdf(
+        "pichincha_fila_entre_paginas",
+        "Una fila con fecha y N.DOC al pie de una página y el resto arriba de la siguiente",
+        "rechazo",
+    ),
+    CasoPdf(
+        "pichincha_separador_de_miles",
+        'Un crédito con separador de miles ("1,200.00"); el resto cuadra',
+        "rechazo",
+        saldos=_SALDOS_MILES,
+    ),
+    CasoPdf(
+        "pichincha_pagina_repetida",
+        'La página de detalle dos veces, con el mismo pie ("Página 2 de 3")',
+        "rechazo",
+    ),
+    CasoPdf(
+        "pichincha_resumen_no_cuadra",
+        "El resumen cuenta un débito más de los que trae el detalle",
+        "rechazo",
+    ),
+    CasoPdf(
+        "pichincha_corte_contado",
+        "Movimientos en las dos fechas de corte, contados en el resumen",
+        "entra",
+        saldos=(PICHINCHA_ANTERIOR, _final_pdf(_EN_CORTE, PICHINCHA_ANTERIOR)),
+    ),
+    CasoPdf(
+        "pichincha_corte_no_contado",
+        "Los mismos movimientos de corte en el detalle, pero no en el resumen",
+        "rechazo",
+    ),
+    CasoPdf(
+        "pichincha_cruza_diciembre",
+        "Periodo de diciembre a enero: cada fecha cae en un solo año",
+        "entra",
+        **_DICIEMBRE,
+    ),
+    CasoPdf(
+        "pichincha_mes_fuera_del_periodo",
+        'Periodo de diciembre a enero con una fecha "15-jun.", que no cae en ninguno de los dos',
+        "rechazo",
+        **_DICIEMBRE,
+    ),
+]
+
+
+def pdfs() -> dict[str, bytes]:
+    """Nombre → bytes de cada PDF sintético. Se versionan junto a los CSV."""
+    dic = {"ultimo": _DIC_ULTIMO, "este": _DIC_ESTE}
+    creditos = sum(1 for *_, c in PICHINCHA if c > 0)
+    debitos = len(PICHINCHA) - creditos
+    contenido = {
+        "pichincha": _estado_pdf(PICHINCHA),
+        "pichincha_doc_partido": _estado_pdf(_DOC_PARTIDO),
+        "pichincha_columna_desplazada": _estado_pdf(PICHINCHA, correr={(4, 4): 65.0}),
+        "pichincha_fila_entre_paginas": _estado_pdf(PICHINCHA, partir_en=9),
+        "pichincha_separador_de_miles": _estado_pdf(_CON_MILES, textos={(1, 5): "1,200.00"}),
+        "pichincha_pagina_repetida": _estado_pdf(PICHINCHA, repetir=2),
+        "pichincha_resumen_no_cuadra": _estado_pdf(PICHINCHA, conteos=(creditos, debitos + 1)),
+        "pichincha_corte_contado": _estado_pdf(_EN_CORTE),
+        "pichincha_corte_no_contado": _estado_pdf(_EN_CORTE, resumen_de=PICHINCHA),
+        "pichincha_cruza_diciembre": _estado_pdf(_CRUZA_DICIEMBRE, **dic),
+        "pichincha_mes_fuera_del_periodo": _estado_pdf(
+            _CRUZA_DICIEMBRE, textos={(2, 0): "15-jun."}, **dic
+        ),
+    }
+    assert list(contenido) == [caso.nombre for caso in CASOS_PDF]
+    return {f"{nombre}.pdf": datos for nombre, datos in contenido.items()}
+
+
 def main() -> None:
     if "--tabla" in sys.argv:
         print(tabla())
@@ -738,7 +1263,8 @@ def main() -> None:
     else:
         preparar(DESTINO)
         DESTINO_PARES.write_bytes(pares_verdaderos())
-        print(f"{len(archivos())} estados sintéticos en {DESTINO.relative_to(RAIZ)}")
+        carpeta = DESTINO.relative_to(RAIZ)
+        print(f"{len(archivos())} estados en CSV y {len(pdfs())} en PDF en {carpeta}")
         print(f"pares verdaderos en {DESTINO_PARES.relative_to(RAIZ)}")
 
 

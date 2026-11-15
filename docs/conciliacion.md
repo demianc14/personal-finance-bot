@@ -19,6 +19,56 @@ Todo lo de esta página se hizo con datos inventados. Ningún estado real entra 
 
 Pichincha no exporta CSV ni Excel, así que entra la subfase del PDF (G1b en [`ROADMAP.md`](../ROADMAP.md)). Hasta que esté, `config/bancos.yaml` solo trae dos bancos inventados. Excel no se lee todavía: pide una dependencia nueva (`openpyxl`) y no se agrega hasta saber si hace falta.
 
+## PDF de Pichincha (G1b): fixtures, todavía sin parser
+
+`scripts/estado_sintetico.py` genera 11 PDF sintéticos en `tests/fixtures/estados/`, con la forma del export de Pichincha. **Todavía no hay parser que los lea**: espera a que cambie la ingesta (anulación en cascada, identidad de cuenta, solape en transacción) para no chocar con ese trabajo.
+
+**Qué prueban y qué no.** Cuando exista el parser, estos fixtures lo prueban **contra nuestro generador, no contra el banco**. Que el generador se parezca al export real se comprobó **una sola vez, en local**, comparando la forma de un estado real con la del sintético (sin copiar su contenido; abajo están las diferencias). Ese contraste no está en los tests ni en el repo. Si el banco cambia el formato, los tests siguen pasando y solo una corrida nueva contra un estado real lo nota.
+
+| Archivo | Qué trae | Debería |
+|---|---|---|
+| `pichincha` | Resumen, una página de detalle y la última vacía, como el real | Entrar |
+| `pichincha_doc_partido` | Tres N.DOC de nueve dígitos con el último en la línea de abajo, como el real | Entrar |
+| `pichincha_columna_desplazada` | El débito de una fila corrido 65 pt, dentro de la columna de crédito | Rechazarse |
+| `pichincha_fila_entre_paginas` | Fecha, oficina y N.DOC al pie de una página; descripción y montos arriba de la siguiente | Rechazarse |
+| `pichincha_separador_de_miles` | Un crédito "1,200.00"; el resto cuadra | Rechazarse |
+| `pichincha_pagina_repetida` | La página de detalle dos veces con el mismo pie ("Página 2 de 3"): cuatro páginas | Rechazarse |
+| `pichincha_resumen_no_cuadra` | El resumen cuenta un débito más de los que trae el detalle | Rechazarse |
+| `pichincha_corte_contado` | Movimientos en las dos fechas de corte, contados en el resumen | Entrar |
+| `pichincha_corte_no_contado` | Los mismos movimientos de corte, pero el resumen no los cuenta | Rechazarse |
+| `pichincha_cruza_diciembre` | Periodo de diciembre a enero; cada fecha cae en un solo año | Entrar |
+| `pichincha_mes_fuera_del_periodo` | El mismo periodo con una fecha "15-jun.", que no cae en ninguno de los dos años | Rechazarse |
+
+La columna "Debería" está **anotada a mano, no medida**: sale de `CASOS_PDF` y la medirá el parser.
+
+**Decisiones de Demian para el parser** (14-nov):
+
+- **Día de corte:** no hay regla fija. Entra el estado cuyo detalle cuadra con los conteos y totales del resumen; si no cuadra, se rechaza (`corte_contado` y `corte_no_contado`).
+- **Año:** la fecha trae día y mes; el año sale del periodo. Si una fecha no cae en exactamente un día del periodo, se rechaza y no se deduce.
+- **Número de cuenta:** se compara entre páginas, pero no se guarda ni se hashea (diez dígitos se sacan por fuerza bruta). La etiqueta de cuenta sale de un mapa local, fuera del repo.
+- **Dashboard:** se publica como PNG en `docs/img/`. La guarda de PDF no tiene excepciones fuera de esta carpeta.
+
+**Cómo se escriben.** A mano, sin dependencias: objetos PDF, content streams sin comprimir y la tabla xref con los offsets reales. No llevan `/Info` ni `/ID`, así que dos corridas dan los mismos bytes (`tests/test_pdf_sintetico.py`, con bytes y sin librería de PDF). El titular, la cédula, la cuenta y los comercios son inventados y llevan la marca SINTETICO.
+
+**Igual que el real** (comparado con pypdf sobre la forma: operadores, orden y troceo, nunca el texto):
+
+- PDF 1.4. Cada página es una envoltura que dibuja la página como Form XObject y escribe "Página N de M" arriba a la derecha, en Helvetica de 10 pt.
+- Adentro, ArialMT TrueType sin embeber, en WinAnsi. Un `BT` por celda con `Tm Tf rg Tj g`, y `Tr 2` antes y `Tr 0` después en las negritas.
+- Solo `Tj`, nunca `TJ` ni kerning: el texto de una celda, con sus espacios, sale en un solo fragmento.
+- N.DOC de nueve dígitos: el último dígito va en el mismo `BT`, con su propio `Tm` 9 pt más abajo, y la fila ocupa 22 pt en vez de 13. En texto plano, esa fila sale en tres líneas, igual que en el real.
+- Orden: filas de arriba abajo y, dentro de cada una, de izquierda a derecha; el título "ESTADO DE CUENTA" va al final de cada página.
+- Bajo la tabla, una celda vacía de 5 pt al borde de cada columna, y en cada página los dos bloques de `Td` sin texto que trae el real.
+- Posición de cada columna, alineación (fecha y saldo centrados, débito y crédito a la derecha) y rótulos del resumen y del encabezado.
+
+**Distinto del real:**
+
+- **Sin compresión.** El real usa FlateDecode. La salida de zlib puede cambiar entre versiones de la librería y rompería el byte a byte.
+- **Sin `/Info` ni `/ID`.** El real los trae, con fechas.
+- **Sin imágenes** (los logos del banco) y sin el bloque de contacto de la página 1, que en el real mezcla varios `Tj` en un `BT`. La página 1 tiene menos fragmentos.
+- **Menos movimientos** (17 en el base, contra unos 30 en el real) y rayas de la tabla más simples (el real dibuja curvas y rellenos de color).
+- **Posiciones redondeadas** a dos decimales; los montos se alinean con las métricas de Helvetica, que son las de Arial.
+- **Supuestos sin ver en el real:** las abreviaturas de mes que no son `oct.` y `nov.`, cómo escribe el banco un monto de 1.000 o más (el real no traía ninguno) y si el día de corte entra al periodo (el real no tenía movimientos ese día).
+
 ## Importar un estado
 
 ```bash
