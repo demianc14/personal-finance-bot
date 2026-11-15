@@ -1,0 +1,44 @@
+Base sintética: 41 gastos y 61 movimientos; 69 filas.
+Conciliado mes por mes, de 2026-03 a 2026-07.
+
+| Regla | Pares hechos | Correctos | Precisión | Recall (aporte) |
+|---|---|---|---|---|
+| `monto_y_fecha` | 14 | 14 | 100% | 14 de 29 (48%) |
+| `monto_3_dias` | 13 | 13 | 100% | 13 de 29 (45%) |
+| `monto_y_descripcion` | 0 | 0 | — | 0 de 29 (0%) |
+| Total | 27 | 27 | 100% | 27 de 29 (93%) |
+
+| categoria_caso | Filas | Pares a encontrar | Unidos | Correctos | Precisión | Recall |
+|---|---|---|---|---|---|---|
+| `exacto` | 12 | 12 | 11 | 11 | 100% | 92% |
+| `movimiento_sin_gasto` | 11 | 0 | 0 | 0 | — | — |
+| `fecha_desfasada` | 6 | 6 | 6 | 6 | 100% | 100% |
+| `mismo_monto_misma_semana` | 6 | 5 | 5 | 5 | 100% | 100% |
+| `comision` | 7 | 0 | 0 | 0 | — | — |
+| `fecha_fuera_de_ventana` | 1 | 1 | 0 | 0 | — | 0% |
+| `interes` | 2 | 0 | 0 | 0 | — | — |
+| `devolucion` | 2 | 0 | 0 | 0 | — | — |
+| `pago_partido` | 3 | 0 | 0 | 0 | — | — |
+| `diario_desfasado` | 4 | 4 | 4 | 4 | 100% | 100% |
+| `gemelos_otro_comercio` | 2 | 0 | 0 | 0 | — | — |
+| `palabras_vacias` | 3 | 0 | 0 | 0 | — | — |
+| `cruza_de_mes` | 2 | 1 | 1 | 1 | 100% | 100% |
+| `gasto_sin_movimiento` | 8 | 0 | 0 | 0 | — | — |
+
+Débitos sin conciliar: 19; por empate: 2.
+  - empate: 2026-06 línea 7
+  - empate: 2026-06 línea 8
+
+Abstenciones y fallos esperados (no entran al recall): 4
+  - 2026-05 línea 18 (pago_partido), gasto verdadero 26: sin unir
+  - 2026-05 línea 19 (pago_partido), gasto verdadero 26: sin unir
+  - 2026-05 línea 25 (pago_partido), gasto verdadero 31|32: sin unir
+  - 2026-06 línea 8 (gemelos_otro_comercio), gasto verdadero 37: sin unir
+
+Pares equivocados: 0
+
+Pares que faltaron: 2
+  - 2026-03 línea 9 (exacto), gasto verdadero 5
+  - 2026-03 línea 16 (fecha_fuera_de_ventana), gasto verdadero 11
+
+Con los meses al revés: 0 pares distintos.

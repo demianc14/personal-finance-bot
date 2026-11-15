@@ -230,43 +230,94 @@ confirmación de siempre.
 
 ### Reglas de cruce (14-nov-2026)
 
-Tres reglas en orden, cada una sobre lo que dejó libre la anterior:
-`monto_y_fecha`, `monto_3_dias` y `monto_y_descripcion` (±10 días y descripción
-parecida). El detalle y la medición están en [conciliacion.md](conciliacion.md#cruce-con-los-gastos).
+La primera versión (PR #25) eran tres reglas en orden, cada una sobre lo que
+dejó libre la anterior: `monto_y_fecha`, `monto_3_dias` y `monto_y_descripcion`
+(±10 días y descripción parecida). Se congelaron en `c7694f0` y se midieron una
+vez. Una revisión encontró cuatro fallos y las cambió el mismo día: lo vigente
+está en la sección siguiente. De la primera versión siguen en pie:
 
 - **Solo cruzan los débitos.** Comisión, interés, pago de tarjeta y todo lo que
   entra quedan fuera: no son un gasto registrado. Una devolución no cruza ni
   deshace el par de la compra.
-- **La ventana de la regla 3 es ±10 días** y se fijó antes de medir, por la
-  lógica de las reglas: con ±3 la regla 2 ya se habría llevado esos pares.
 - **Descripción parecida = dos palabras en común, o una si es distintiva.** Las
   palabras van sin tildes, sin números y con cuatro letras o más. "Distintiva"
   es que no está en `palabras_genericas` de `config/bancos.yaml` (compra, pago,
-  débito, tienda...). La lista se escribió antes de medir.
-- **Desempate:** gana el gasto más cercano en días y después el que comparte
-  más palabras. Un par solo se acepta si la elección es mutua.
-- **Empate total: no se une ninguno.** Un par mal unido esconde un gasto sin
+  débito, tienda...). La lista se escribió antes de medir y no se tocó después.
+- **Empate: no se une ninguno.** Un par mal unido esconde un gasto sin
   registrar; uno sin unir solo queda pendiente. `--conciliar` dice cuántos
   movimientos quedaron así.
-- **Gemelos exactos: se unen en orden.** Si N movimientos de la misma fecha y N
-  gastos de la misma fecha tienen el mismo monto y el mismo parecido, se unen
-  por línea del archivo e id del gasto. Motivo: son intercambiables, así que
-  cualquier asignación da la misma cobertura y el mismo total, y abstenerse
-  dejaría sin conciliar dos cafés iguales del mismo día, que es un caso
-  cotidiano. Test: `test_gemelos_exactos_se_unen_en_orden`.
-- **Si sobran movimientos gemelos, se une uno y el resto queda sin conciliar**
-  (dos cargos iguales el mismo día y un solo gasto). Es el mismo motivo: no
-  importa cuál de los dos cargos se queda con el gasto, y el que sobra es
-  justo el que falta registrar. Si lo que sobra son gastos, o los movimientos
-  empatados son de días distintos, no se une ninguno. Tests:
-  `test_dos_movimientos_iguales_el_mismo_dia_y_un_solo_gasto` y
-  `test_dos_movimientos_de_dias_distintos_empatan_por_un_gasto`.
-- **Los candidatos y el parecido salen de SQL; el desempate, de Python.** La
+- **Los candidatos y el parecido salen de SQL; la decisión, de Python.** La
   consulta trae los pares posibles (monto, tipo, ventana, parecido con una
-  función registrada en la conexión) y `resolver` decide entre los que
-  compiten. Es una función pura, sin base, con sus tests.
-- **Las reglas se congelaron en un commit antes de medir** (`c7694f0`) y se
-  midieron una vez. No se ajustan mirando `evals/pares_verdaderos.csv`.
+  función registrada en la conexión) y `resolver` decide. Es una función pura,
+  sin base, con sus tests.
+
+### Reglas de cruce: revisión del 14-nov-2026
+
+Cuatro fallos reproducidos en las reglas de la PR #25. Los casos entraron al set
+sintético y el criterio de éxito se escribió antes de tocar las reglas (commit
+`99a42c4`); el detalle y la medición están en
+[conciliacion.md](conciliacion.md#revisión-de-las-reglas-criterio-congelado).
+
+- **El cruce mira todos los movimientos libres; el mes solo filtra lo que se
+  muestra** (B8). Antes, `--conciliar 2026-03` solo veía los cargos de marzo, y
+  el del 30 de marzo se llevaba el gasto del 1 de abril antes de que el cargo
+  del 1 de abril pudiera competir. Ahora compiten siempre todos, y los pares de
+  otros meses se guardan en la misma corrida. La alternativa era calcular todo y
+  guardar solo los del mes: se descartó porque un cargo quedaría reservado para
+  un gasto sin que el par esté guardado en ninguna parte.
+- **`monto_y_fecha` y `monto_3_dias` se deciden juntas, por menor distancia
+  total** (B6). Con el mismo gasto todos los días y el banco cobrando un día
+  después, decidir primero "misma fecha" une cada cargo con el gasto del día
+  siguiente y deja uno suelto. Ahora, en cada grupo de cargos y gastos del mismo
+  monto a tres días o menos, se elige la asignación uno a uno que une más pares
+  y, entre esas, la que suma menos días. Ya no vale "cada regla corre sobre lo
+  que dejó libre la anterior" para estas dos: el nombre de la regla sale después,
+  de la distancia de cada par.
+- **Es un problema de asignación y se resuelve exacto, con el algoritmo
+  húngaro, escrito en `reglas.py`.** Un criterio par por par (el más cercano, la
+  elección mutua) no puede dar la respuesta de B6, porque lo mejor para el
+  conjunto no es lo mejor para cada cargo. El algoritmo húngaro da el óptimo
+  exacto, es determinista y cabe en una función de 40 líneas; no se agregó
+  ninguna dependencia. Los grupos son chicos (un monto en días vecinos): un mes
+  entero del mismo monto, 30 cargos, se resuelve dentro de un test normal.
+- **Desempates, en orden: palabras distintivas en común y después el orden de
+  las fechas.** El orden de fechas se expresa como "menor suma de días al
+  cuadrado": dos gastos del lunes y martes cobrados el miércoles y jueves suman
+  4 días en orden o cruzados, pero 8 contra 10 al cuadrado. Con una función
+  estrictamente convexa, descruzar dos pares siempre baja la suma, así que gana
+  la asignación que respeta el orden. Sin este desempate ese caso, que es de
+  todos los días, quedaría sin unir.
+- **Si la mejor asignación no es única, no se une nadie del grupo.** Se
+  comprueba prohibiendo cada par de la mejor asignación y resolviendo de nuevo:
+  si sale otra igual de buena, hay dos respuestas. Se abstiene el grupo entero y
+  no solo la parte dudosa: es más simple de explicar y de verificar, y cuesta
+  recall, no precisión.
+- **Gemelos: solo con la misma fecha y la misma descripción** (B5). La premisa
+  anterior era que dos cargos del mismo monto y fecha son intercambiables, así
+  que daba igual cuál se quedaba con el gasto y bastaba el orden del archivo.
+  **Es falsa cuando son de comercios distintos:** el cargo que sobra es justo el
+  que se va a proponer como gasto sin registrar, y si se une el equivocado se
+  propone el comercio equivocado y el par guarda una categoría que no es. Ahora
+  dos cargos son gemelos solo si el banco los describe igual. Si son de
+  comercios distintos, se une el que el texto del gasto nombra con una palabra
+  distintiva; si no nombra a ninguno, no se une ninguno. Los gastos nunca son
+  gemelos entre sí: si un cargo puede ser de dos gastos y nada los distingue, no
+  se une. Tests: `test_gemelos_de_comercios_distintos_*`.
+- **`monto_y_descripcion` queda apagada por defecto** (B7), con opt-in en
+  `config/bancos.yaml` (`regla_descripcion: true`). Motivo: 0 pares medidos en
+  la PR #25 y 3 falsos positivos reproducidos, por "quito", "para" y "compra
+  online". Una regla sin ningún acierto medido y con errores conocidos no se
+  deja encendida sobre dinero real. Para encenderla hace falta una medición
+  nueva con pares que le toquen.
+- **`palabras_genericas` no se tocó.** Agregar "para" o "quito" sería ajustar la
+  lista mirando los fallos. Con la regla apagada esas palabras solo pueden
+  desempatar entre dos candidatos que ya cumplen monto y fecha; queda como
+  límite en `docs/conciliacion.md`.
+- **El set sintético pasa a ser de desarrollo.** Las reglas se cambiaron después
+  de ver la medición de la PR #25 y los cuatro casos nuevos. La cifra nueva
+  (27 de 27 correctos, recall 27 de 29) dice que las reglas hacen lo pedido en
+  los casos conocidos, no cómo les iría con datos sin ver. Las reglas nuevas se
+  midieron una vez, en `e703909`.
 
 ### Integridad de las conciliaciones (14-nov-2026)
 

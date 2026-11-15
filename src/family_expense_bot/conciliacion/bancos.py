@@ -102,6 +102,10 @@ class Bancos(BaseModel):
     la regla de cruce por descripción: una sola palabra en común no alcanza si es
     de estas."""
 
+    regla_descripcion: bool = False
+    """Enciende la regla de cruce `monto_y_descripcion`. Apagada por defecto: ver
+    docs/decisiones.md."""
+
     @field_validator("palabras_genericas")
     @classmethod
     def _palabras_sueltas(cls, v: list[str]) -> list[str]:

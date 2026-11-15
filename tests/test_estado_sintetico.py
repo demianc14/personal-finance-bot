@@ -65,13 +65,13 @@ def test_los_tipos_salen_de_las_reglas_del_banco(carpeta: Path) -> None:
     assert resultado.por_tipo == tipos
 
 
-def test_la_base_sintetica_trae_gastos_y_los_tres_estados(tmp_path: Path) -> None:
+def test_la_base_sintetica_trae_gastos_y_los_cinco_estados(tmp_path: Path) -> None:
     ruta = tmp_path / "sintetica.db"
-    assert sintetico.base_sintetica(ruta) == (32, 48)
+    assert sintetico.base_sintetica(ruta) == (41, 61)
     with crear_engine(f"sqlite:///{ruta}").connect() as con:
-        assert con.execute(text("SELECT count(*) FROM gastos")).scalar_one() == 32
-        assert con.execute(text("SELECT count(*) FROM estados_cuenta")).scalar_one() == 3
-        assert con.execute(text("SELECT count(*) FROM movimientos")).scalar_one() == 48
+        assert con.execute(text("SELECT count(*) FROM gastos")).scalar_one() == 41
+        assert con.execute(text("SELECT count(*) FROM estados_cuenta")).scalar_one() == 5
+        assert con.execute(text("SELECT count(*) FROM movimientos")).scalar_one() == 61
         assert con.execute(text("SELECT count(*) FROM conciliaciones")).scalar_one() == 0
 
 
@@ -102,6 +102,10 @@ REQUERIDOS = {
     "devolucion",
     "pago_partido",
     "fecha_desfasada",
+    "diario_desfasado",
+    "gemelos_otro_comercio",
+    "palabras_vacias",
+    "cruza_de_mes",
 }
 
 
@@ -122,7 +126,7 @@ def test_los_pares_son_suficientes_y_traen_los_casos_adversarios() -> None:
     casos = {fila["categoria_caso"] for fila in pares}
     assert casos >= REQUERIDOS
     fallos = {fila["categoria_caso"] for fila in pares if fila["fallo_esperado"] == "si"}
-    assert fallos == {"pago_partido"}
+    assert fallos == {"pago_partido", "gemelos_otro_comercio"}
 
 
 def test_cada_gasto_id_existe_y_cada_movimiento_tiene_exactamente_una_fila(tmp_path: Path) -> None:
