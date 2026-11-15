@@ -236,11 +236,23 @@ La columna de la PR #25 es la corrida de las reglas viejas sobre el set nuevo, h
 
 ## Integridad de las conciliaciones
 
-Un par vigente solo une un gasto vigente con un movimiento vigente de un estado vigente, uno a uno. Lo sostienen tres cosas:
+Un par vigente solo une un gasto vigente con un movimiento vigente de un estado vigente, uno a uno. Lo sostienen cuatro cosas:
 
-- **Anular arrastra el par, en la misma transacción.** Borrar un gasto conciliado anula su par y el cargo vuelve a "sin conciliar". Editarlo (anular + crear) también: el gasto nuevo queda libre y el siguiente `--conciliar` lo cruza de nuevo. El par no se hereda porque la edición pudo cambiar el monto o la fecha.
+- **Anular arrastra el par, en la misma transacción.** Borrar un gasto conciliado anula su par y el cargo vuelve a "sin conciliar". Editarlo (anular + crear) depende de qué cambió: si la edición toca el monto o la fecha, el par se anula y el gasto nuevo queda libre para el siguiente `--conciliar`; si solo cambia la categoría, la descripción u otro campo, el par pasa al gasto nuevo con la misma regla (se anula el del viejo, con el motivo `par heredado por el gasto #<nuevo>`, y se crea el del nuevo).
 - **Anular un estado anula sus movimientos y sus pares** (`RepositorioEstados.anular`). Después, el mismo archivo se puede importar otra vez y cruza igual que antes. Todavía no hay comando para anular un estado: es un método del repositorio.
-- **`--conciliar` audita antes de cruzar.** Si encuentra un par vigente sobre un gasto anulado, sobre un movimiento o un estado anulado, o un movimiento o un gasto en más de un par, termina con error, lista los pares y no guarda nada.
+- **Quien lee para escribir toma el candado antes de leer.** `--conciliar`, `--reparar-integridad --confirmar`, `--anular-par` y anular o editar un gasto, un ingreso o un estado abren la transacción con `BEGIN IMMEDIATE`. Si dos llegan a la vez, la segunda espera a la primera (hasta 5 segundos) y lee lo que la primera dejó: dos ediciones del mismo gasto no dejan dos gastos vigentes, y nadie borra un gasto entre que `--conciliar` elige los pares y los guarda. Si no le toca a tiempo, falla con "database is locked" y no escribe nada. Las lecturas no toman el candado.
+- **`--conciliar` audita antes de cruzar.** Si encuentra un par vigente roto, termina con error, lista los pares y no guarda nada. Si la base rechaza un par al guardarlo (índice único) o está ocupada, también termina con un mensaje y sin guardar nada.
+
+Qué cuenta como par roto:
+
+| Problema | Qué revisa |
+|---|---|
+| `gasto anulado`, `movimiento anulado`, `estado anulado` | El par sigue vigente y lo que une ya no. |
+| `gasto inexistente`, `movimiento inexistente`, `estado inexistente` | La fila ya no está (borrada a mano, con las llaves foráneas apagadas). |
+| `movimiento en más de un par`, `gasto en más de un par` | Se rompió el uno a uno. |
+| `monto distinto` | El gasto y el movimiento no tienen el mismo monto. |
+| `movimiento no es débito` | El tipo no es `debito` o el monto no es negativo. |
+| `fecha fuera de la ventana` | Las fechas distan más que los días de la regla que unió el par (0, 3 o 10); una regla desconocida usa 10. |
 
 Una base anterior a este arreglo, o tocada a mano, puede traer pares rotos. Se reparan así:
 
@@ -253,6 +265,18 @@ family-expense-bot --reparar-integridad --confirmar
 ```
 
 El primero es una simulación: lista los pares que anularía y no cambia nada. Con `--confirmar` los anula en una transacción, con el motivo `reparado: <problema>`. Nada se borra. Si un movimiento o un gasto quedó en varios pares se anulan todos, y el siguiente `--conciliar` vuelve a cruzar lo que quedó libre.
+
+Un par que está íntegro pero es el equivocado se anula por su id:
+
+```bash
+family-expense-bot --anular-par 12 --motivo "era el cargo del día siguiente"
+```
+
+```bash
+family-expense-bot --anular-par 12 --motivo "era el cargo del día siguiente" --confirmar
+```
+
+Igual que la reparación: sin `--confirmar` muestra qué anularía y no cambia nada. El movimiento y el gasto siguen vigentes y quedan libres. **Límite:** las reglas no recuerdan el rechazo, así que si el monto y la fecha siguen calzando, el siguiente `--conciliar` los vuelve a unir.
 
 ## Decisiones
 

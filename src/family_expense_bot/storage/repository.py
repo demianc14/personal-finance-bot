@@ -11,7 +11,17 @@ from decimal import Decimal
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import ColumnElement, Engine, create_engine, event, inspect, select, text, update
+from sqlalchemy import (
+    ColumnElement,
+    Connection,
+    Engine,
+    create_engine,
+    event,
+    inspect,
+    select,
+    text,
+    update,
+)
 from sqlalchemy.orm import Session, sessionmaker
 
 from family_expense_bot.conciliacion.contrato import EstadoLeido, EstadoVigente
@@ -113,26 +123,64 @@ Las tablas nuevas (ingresos, y las tres de la conciliación) no necesitan entrad
 """
 
 
-def activar_llaves_foraneas(engine: Engine) -> Engine:
-    """Activa las llaves foráneas en cada conexión que abra el engine.
+_INMEDIATA = "sqlite_inmediata"
+"""Opción de ejecución que marca una conexión como de escritura (ver `para_escribir`)."""
 
-    SQLite las ignora salvo que cada conexión lo pida con un PRAGMA; sin esto,
-    una conciliación podría apuntar a un gasto o a un movimiento que no existe.
+
+def preparar_sqlite(engine: Engine) -> Engine:
+    """Llaves foráneas en cada conexión, y las transacciones las abre este módulo.
+
+    SQLite ignora las llaves foráneas salvo que cada conexión lo pida con un
+    PRAGMA; sin esto, una conciliación podría apuntar a un gasto o a un
+    movimiento que no existe.
+
+    Además, pysqlite no abre la transacción hasta el primer INSERT o UPDATE: lo
+    que se leyó antes quedó fuera, y otro proceso puede cambiarlo entre la
+    lectura y la escritura. Acá se le quita ese manejo (`isolation_level =
+    None`) y el `BEGIN` lo emite el evento `begin`: `BEGIN IMMEDIATE`, que toma
+    el candado de escritura antes de leer, en los engines de `para_escribir`, y
+    un `BEGIN` común en los demás, para que las lecturas no hagan cola.
+
     Hay que llamarla antes de la primera conexión.
     """
     if engine.dialect.name == "sqlite":
 
         @event.listens_for(engine, "connect")
         def _al_conectar(conexion: Any, _registro: Any) -> None:
+            conexion.isolation_level = None
             cursor = conexion.cursor()
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.close()
 
+        @event.listens_for(engine, "begin")
+        def _al_empezar(conexion: Connection) -> None:
+            inmediata = conexion.get_execution_options().get(_INMEDIATA, False)
+            conexion.exec_driver_sql("BEGIN IMMEDIATE" if inmediata else "BEGIN")
+
     return engine
 
 
+def para_escribir(engine: Engine) -> Engine:
+    """El mismo engine (mismas conexiones), con transacciones que bloquean al empezar.
+
+    Toda operación que lee y después escribe según lo que leyó va por acá: la
+    segunda que llega espera a que la primera termine (hasta el `timeout` de la
+    conexión, 5 segundos por defecto) y entonces lee el estado ya cambiado. Si
+    no le toca a tiempo, falla con "database is locked" y no escribe nada.
+    """
+    return engine.execution_options(**{_INMEDIATA: True})
+
+
+def _sesiones(engine: Engine) -> tuple[sessionmaker[Session], sessionmaker[Session]]:
+    """(para leer, para escribir) sobre el mismo engine."""
+    return (
+        sessionmaker(engine, expire_on_commit=False),
+        sessionmaker(para_escribir(engine), expire_on_commit=False),
+    )
+
+
 def _engine(url: str) -> Engine:
-    return activar_llaves_foraneas(create_engine(url))
+    return preparar_sqlite(create_engine(url))
 
 
 def migrar(url: str) -> list[str]:
@@ -194,7 +242,7 @@ def verificar_esquema(engine: Engine) -> None:
 
 class RepositorioGastos:
     def __init__(self, engine: Engine) -> None:
-        self._sesion = sessionmaker(engine, expire_on_commit=False)
+        self._sesion, self._escritura = _sesiones(engine)
 
     def guardar(
         self,
@@ -213,7 +261,7 @@ class RepositorioGastos:
             raise GastoSinMonto(f"El gasto de {gasto.texto_original!r} no tiene monto")
 
         fila = self._fila(gasto, registrado_por, corregido_manualmente, origen, subcategoria)
-        with self._sesion.begin() as sesion:
+        with self._escritura.begin() as sesion:
             sesion.add(fila)
         return GastoRegistrado.desde_fila(fila)
 
@@ -228,13 +276,19 @@ class RepositorioGastos:
         """Editar sin perder historia: anula el viejo y guarda el nuevo, todo o nada.
 
         Devuelve None si el viejo no existe, ya estaba anulado o lo registró otra
-        persona. El viejo queda con el motivo `editado → #<nuevo>`. Si estaba
-        conciliado, el par se anula en la misma transacción: el nuevo queda
-        libre y vuelve a cruzarse en el siguiente `--conciliar`.
+        persona. El viejo queda con el motivo `editado → #<nuevo>`.
+
+        Si estaba conciliado y la edición no toca el monto ni la fecha (lo único
+        que miran las reglas de cruce), el par pasa al gasto nuevo con la misma
+        regla: se anula el del viejo y se crea el del nuevo, sin perder historia.
+        Si cambia alguno de los dos, el par solo se anula y el nuevo queda libre
+        para el siguiente `--conciliar`. Todo en la misma transacción, que toma
+        el candado antes de leer: dos ediciones del mismo gasto no dejan dos
+        gastos vigentes.
         """
         if gasto.monto is None:
             raise GastoSinMonto(f"El gasto de {gasto.texto_original!r} no tiene monto")
-        with self._sesion.begin() as sesion:
+        with self._escritura.begin() as sesion:
             viejo = sesion.get(Gasto, id_gasto)
             if (
                 viejo is None
@@ -248,10 +302,28 @@ class RepositorioGastos:
             ahora = datetime.now(UTC)
             viejo.anulado_en = ahora
             viejo.motivo_anulacion = f"editado → #{nuevo.id}"
-            # El par no se hereda: la edición pudo cambiar el monto o la fecha.
-            _anular_conciliaciones(
-                sesion, Conciliacion.gasto_id == id_gasto, f"gasto editado → #{nuevo.id}", ahora
+            par = sesion.scalars(
+                select(Conciliacion).where(
+                    Conciliacion.gasto_id == id_gasto, Conciliacion.anulado_en.is_(None)
+                )
+            ).first()
+            hereda = (
+                par is not None
+                and nuevo.monto_centavos == viejo.monto_centavos
+                and nuevo.fecha == viejo.fecha
             )
+            motivo = (
+                f"par heredado por el gasto #{nuevo.id}"
+                if hereda
+                else f"gasto editado → #{nuevo.id}"
+            )
+            _anular_conciliaciones(sesion, Conciliacion.gasto_id == id_gasto, motivo, ahora)
+            if par is not None and hereda:
+                sesion.add(
+                    Conciliacion(
+                        movimiento_id=par.movimiento_id, gasto_id=nuevo.id, regla=par.regla
+                    )
+                )
         return GastoRegistrado.desde_fila(nuevo)
 
     def subcategorias_usadas(self, registrado_por: int) -> dict[str, list[str]]:
@@ -335,7 +407,7 @@ class RepositorioGastos:
         if not motivo.strip():
             raise ValueError("Anular un gasto exige un motivo")
 
-        with self._sesion.begin() as sesion:
+        with self._escritura.begin() as sesion:
             fila = sesion.get(Gasto, id_gasto)
             if fila is None or fila.anulado_en is not None:
                 return False
@@ -352,11 +424,11 @@ class RepositorioExtracciones:
     """Registro de intentos de extracción. Insumo del reporte de calidad."""
 
     def __init__(self, engine: Engine) -> None:
-        self._sesion = sessionmaker(engine, expire_on_commit=False)
+        self._sesion, self._escritura = _sesiones(engine)
 
     def registrar(self, gasto: GastoExtraido, confirmada: bool, corregida: bool = False) -> None:
         """Registra las confianzas **originales** del LLM, aunque se haya corregido algo."""
-        with self._sesion.begin() as sesion:
+        with self._escritura.begin() as sesion:
             sesion.add(
                 Extraccion(
                     confirmada=confirmada,
@@ -418,11 +490,11 @@ class RepositorioIngresos:
     """Ingresos extra. Mismas reglas que los gastos: nada se borra, editar es reemplazar."""
 
     def __init__(self, engine: Engine) -> None:
-        self._sesion = sessionmaker(engine, expire_on_commit=False)
+        self._sesion, self._escritura = _sesiones(engine)
 
     def guardar(self, ingreso: IngresoNuevo, registrado_por: int) -> IngresoRegistrado:
         fila = self._fila(ingreso, registrado_por)
-        with self._sesion.begin() as sesion:
+        with self._escritura.begin() as sesion:
             sesion.add(fila)
         return IngresoRegistrado.desde_fila(fila)
 
@@ -450,7 +522,7 @@ class RepositorioIngresos:
     def anular(self, id_ingreso: int, motivo: str) -> bool:
         if not motivo.strip():
             raise ValueError("Anular un ingreso exige un motivo")
-        with self._sesion.begin() as sesion:
+        with self._escritura.begin() as sesion:
             fila = sesion.get(Ingreso, id_ingreso)
             if fila is None or fila.anulado_en is not None:
                 return False
@@ -462,7 +534,7 @@ class RepositorioIngresos:
         self, id_ingreso: int, ingreso: IngresoNuevo, registrado_por: int
     ) -> IngresoRegistrado | None:
         """Como `RepositorioGastos.reemplazar`: anula el viejo y guarda el nuevo, todo o nada."""
-        with self._sesion.begin() as sesion:
+        with self._escritura.begin() as sesion:
             viejo = sesion.get(Ingreso, id_ingreso)
             if viejo is None or viejo.anulado_en is not None:
                 return None
@@ -512,7 +584,7 @@ class RepositorioEstados:
     """Estados de cuenta ya verificados. Que cuadren lo decide `conciliacion`, no este módulo."""
 
     def __init__(self, engine: Engine) -> None:
-        self._sesion = sessionmaker(engine, expire_on_commit=False)
+        self._sesion, self._escritura = _sesiones(engine)
 
     def vigentes(self) -> list[EstadoVigente]:
         """Los estados sin anular, sin sus movimientos, del más viejo al más nuevo."""
@@ -539,7 +611,7 @@ class RepositorioEstados:
             saldo_final_centavos=estado.saldo_final_centavos,
             hash_archivo=estado.hash_archivo,
         )
-        with self._sesion.begin() as sesion:
+        with self._escritura.begin() as sesion:
             sesion.add(fila)
             sesion.flush()  # para conocer el id del estado antes de colgarle los movimientos
             sesion.add_all(
@@ -565,7 +637,7 @@ class RepositorioEstados:
         """
         if not motivo.strip():
             raise ValueError("Anular un estado exige un motivo")
-        with self._sesion.begin() as sesion:
+        with self._escritura.begin() as sesion:
             fila = sesion.get(EstadoCuenta, id_estado)
             if fila is None or fila.anulado_en is not None:
                 return False
@@ -595,4 +667,55 @@ class RepositorioEstados:
             saldo_anterior_centavos=fila.saldo_anterior_centavos,
             saldo_final_centavos=fila.saldo_final_centavos,
             hash_archivo=fila.hash_archivo,
+        )
+
+
+class ParRegistrado(BaseModel):
+    """Vista de lectura de una conciliación guardada."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: int
+    movimiento_id: int
+    gasto_id: int
+    regla: str
+    anulado: bool
+
+
+class RepositorioConciliaciones:
+    """Los pares ya guardados. Crearlos es cosa de `conciliacion.reglas`, no de este módulo."""
+
+    def __init__(self, engine: Engine) -> None:
+        self._sesion, self._escritura = _sesiones(engine)
+
+    def obtener(self, id_par: int) -> ParRegistrado | None:
+        with self._sesion() as sesion:
+            fila = sesion.get(Conciliacion, id_par)
+            return self._registrado(fila) if fila else None
+
+    def anular(self, id_par: int, motivo: str) -> bool:
+        """Anula un par y deja libres a su movimiento y a su gasto, que siguen vigentes.
+
+        Devuelve False si no existe o ya estaba anulado. Las reglas de cruce no
+        recuerdan el rechazo: si el movimiento y el gasto siguen calzando, el
+        siguiente `--conciliar` los vuelve a unir.
+        """
+        if not motivo.strip():
+            raise ValueError("Anular un par exige un motivo")
+        with self._escritura.begin() as sesion:
+            fila = sesion.get(Conciliacion, id_par)
+            if fila is None or fila.anulado_en is not None:
+                return False
+            fila.anulado_en = datetime.now(UTC)
+            fila.motivo_anulacion = motivo.strip()[:200]
+            return True
+
+    @staticmethod
+    def _registrado(fila: Conciliacion) -> ParRegistrado:
+        return ParRegistrado(
+            id=fila.id,
+            movimiento_id=fila.movimiento_id,
+            gasto_id=fila.gasto_id,
+            regla=fila.regla,
+            anulado=fila.anulado_en is not None,
         )

@@ -9,6 +9,7 @@ from datetime import date
 from pathlib import Path
 
 import uvicorn
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from family_expense_bot.app.api import ServiciosApp, crear_app
 from family_expense_bot.bot.envio import enviar
@@ -41,12 +42,14 @@ from family_expense_bot.extraction.gemini import GeminiCliente
 from family_expense_bot.extraction.parser import extraer
 from family_expense_bot.storage.repository import (
     EsquemaDesactualizado,
+    RepositorioConciliaciones,
     RepositorioEstados,
     RepositorioExtracciones,
     RepositorioGastos,
     RepositorioIngresos,
     crear_engine,
     migrar,
+    para_escribir,
 )
 
 
@@ -176,7 +179,19 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--confirmar",
         action="store_true",
-        help="Con --reparar-integridad: anula de verdad los pares rotos, en una transacción.",
+        help="Con --reparar-integridad o --anular-par: anula de verdad, en una transacción.",
+    )
+    parser.add_argument(
+        "--anular-par",
+        type=int,
+        metavar="ID",
+        help="Anula una conciliación por su id y deja libres a su movimiento y a su gasto. "
+        "Exige --motivo. Sin --confirmar solo muestra qué anularía.",
+    )
+    parser.add_argument(
+        "--motivo",
+        metavar="TEXTO",
+        help="Con --anular-par: por qué se anula el par. Queda guardado con la anulación.",
     )
     return parser
 
@@ -184,8 +199,12 @@ def _parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = _parser()
     args = parser.parse_args()
-    if args.confirmar and not args.reparar_integridad:
-        parser.error("--confirmar solo va con --reparar-integridad")
+    if args.confirmar and not (args.reparar_integridad or args.anular_par is not None):
+        parser.error("--confirmar solo va con --reparar-integridad o --anular-par")
+    if args.motivo is not None and args.anular_par is None:
+        parser.error("--motivo solo va con --anular-par")
+    if args.anular_par is not None and not (args.motivo or "").strip():
+        parser.error("--anular-par exige --motivo con el porqué")
 
     _configurar_logging()
     if args.evaluar and args.desde_corrida:
@@ -216,6 +235,10 @@ def main() -> None:
 
     if args.reparar_integridad:
         _reparar_integridad(args.confirmar, settings)
+        return
+
+    if args.anular_par is not None:
+        _anular_par(args.anular_par, args.motivo.strip(), args.confirmar, settings)
         return
 
     if args.conciliar:
@@ -370,9 +393,27 @@ def _conciliar(desde: date, hasta: date, settings: Settings) -> None:
             "--confirmar para anularlas."
         ) from e
     bancos = cargar_bancos()
-    cruce = conciliar(
-        engine, bancos.genericas, desde, hasta, con_descripcion=bancos.regla_descripcion
-    )
+    try:
+        # Con el candado tomado antes de leer candidatos: nadie anula un gasto ni
+        # hace otro cruce entre que se eligen los pares y se guardan.
+        cruce = conciliar(
+            para_escribir(engine),
+            bancos.genericas,
+            desde,
+            hasta,
+            con_descripcion=bancos.regla_descripcion,
+        )
+    except IntegrityError as e:
+        raise SystemExit(
+            "No concilio: la base rechazó un par (un movimiento o un gasto ya estaba en otro "
+            f"par vigente) y no se guardó nada.\n  {e.orig}\n"
+            "Corre `family-expense-bot --reparar-integridad` y vuelve a intentar."
+        ) from e
+    except OperationalError as e:
+        raise SystemExit(
+            "No concilio: la base está ocupada por otra escritura o no se pudo usar, y no se "
+            f"guardó nada.\n  {e.orig}\nVuelve a intentar en unos segundos."
+        ) from e
     reglas = ", ".join(f"{regla} {cuantos}" for regla, cuantos in cruce.por_regla.items())
     print(f"Conciliación de {desde:%Y-%m}: {len(cruce.pares)} pares nuevos ({reglas}).")
     print(
@@ -384,6 +425,39 @@ def _conciliar(desde: date, hasta: date, settings: Settings) -> None:
             f"  Además se guardaron {cruce.pares_fuera_del_periodo} pares de otros meses: "
             "el cruce mira todos los movimientos libres, no solo los de este mes."
         )
+
+
+def _anular_par(id_par: int, motivo: str, confirmar: bool, settings: Settings) -> None:
+    try:
+        engine = crear_engine(settings.database_url)
+    except EsquemaDesactualizado as e:
+        raise SystemExit(f"No anulo: {e}") from e
+    repositorio = RepositorioConciliaciones(engine)
+    par = repositorio.obtener(id_par)
+    if par is None or par.anulado:
+        estado = "no existe" if par is None else "ya estaba anulado"
+        raise SystemExit(f"No anulo: el par #{id_par} {estado}. No se cambió nada.")
+    descrito = (
+        f"par #{par.id} (movimiento #{par.movimiento_id}, gasto #{par.gasto_id}, regla {par.regla})"
+    )
+    if not confirmar:
+        print(f"Simulación: se anularía el {descrito} con el motivo {motivo!r}.")
+        print("  No se cambió nada. Para anularlo, repite el comando con --confirmar.")
+        return
+    try:
+        anulado = repositorio.anular(id_par, motivo)
+    except OperationalError as e:
+        raise SystemExit(
+            f"No anulo: la base está ocupada por otra escritura.\n  {e.orig}\n"
+            "Vuelve a intentar en unos segundos."
+        ) from e
+    if not anulado:  # otro proceso lo anuló entre la consulta y ahora
+        raise SystemExit(f"No anulo: el par #{id_par} ya estaba anulado. No se cambió nada.")
+    print(f"Anulado el {descrito}. El movimiento y el gasto siguen vigentes y quedan libres.")
+    print(
+        "  Ojo: las reglas no recuerdan este rechazo. Si el monto y la fecha siguen calzando, "
+        "el siguiente --conciliar los puede volver a unir."
+    )
 
 
 def _reparar_integridad(confirmar: bool, settings: Settings) -> None:

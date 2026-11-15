@@ -19,7 +19,7 @@ from family_expense_bot.storage.repository import (
     RepositorioExtracciones,
     RepositorioGastos,
     RepositorioIngresos,
-    activar_llaves_foraneas,
+    preparar_sqlite,
 )
 from tests.test_auth_webapp import TOKEN, init_data
 
@@ -33,7 +33,7 @@ DEMIAN, MAMA, EXTRANO = 42, 43, 99
 def engine() -> Engine:
     # Una sola conexión: TestClient corre las rutas en otro hilo y "sqlite://" es por conexión.
     e = create_engine("sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False})
-    activar_llaves_foraneas(e)  # igual que en producción (`crear_engine`)
+    preparar_sqlite(e)  # igual que en producción (`crear_engine`)
     Base.metadata.create_all(e)
     return e
 
