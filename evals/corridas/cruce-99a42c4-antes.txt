@@ -1,0 +1,61 @@
+Base sintética: 41 gastos y 61 movimientos; 69 filas.
+Conciliado mes por mes, de 2026-03 a 2026-07.
+
+| Regla | Pares hechos | Correctos | Precisión | Recall (aporte) |
+|---|---|---|---|---|
+| `monto_y_fecha` | 17 | 13 | 76% | 13 de 29 (45%) |
+| `monto_3_dias` | 8 | 7 | 88% | 7 de 29 (24%) |
+| `monto_y_descripcion` | 3 | 0 | 0% | 0 de 29 (0%) |
+| Total | 28 | 20 | 71% | 20 de 29 (69%) |
+
+| categoria_caso | Filas | Pares a encontrar | Unidos | Correctos | Precisión | Recall |
+|---|---|---|---|---|---|---|
+| `exacto` | 12 | 12 | 11 | 11 | 100% | 92% |
+| `movimiento_sin_gasto` | 11 | 0 | 0 | 0 | — | — |
+| `fecha_desfasada` | 6 | 6 | 6 | 6 | 100% | 100% |
+| `mismo_monto_misma_semana` | 6 | 5 | 3 | 3 | 100% | 60% |
+| `comision` | 7 | 0 | 0 | 0 | — | — |
+| `fecha_fuera_de_ventana` | 1 | 1 | 0 | 0 | — | 0% |
+| `interes` | 2 | 0 | 0 | 0 | — | — |
+| `devolucion` | 2 | 0 | 0 | 0 | — | — |
+| `pago_partido` | 3 | 0 | 0 | 0 | — | — |
+| `diario_desfasado` | 4 | 4 | 3 | 0 | 0% | 0% |
+| `gemelos_otro_comercio` | 2 | 0 | 1 | 0 | 0% | — |
+| `palabras_vacias` | 3 | 0 | 3 | 0 | 0% | — |
+| `cruza_de_mes` | 2 | 1 | 1 | 0 | 0% | 0% |
+| `gasto_sin_movimiento` | 8 | 0 | 3 | 0 | 0% | — |
+
+Débitos sin conciliar: 18; por empate: 2.
+  - empate: 2026-05 línea 21
+  - empate: 2026-05 línea 22
+
+Abstenciones y fallos esperados (no entran al recall): 4
+  - 2026-05 línea 18 (pago_partido), gasto verdadero 26: sin unir
+  - 2026-05 línea 19 (pago_partido), gasto verdadero 26: sin unir
+  - 2026-05 línea 25 (pago_partido), gasto verdadero 31|32: sin unir
+  - 2026-06 línea 8 (gemelos_otro_comercio), gasto verdadero 37: sin unir
+
+Pares equivocados: 8
+  - gasto 34 por monto_y_fecha; 2026-06 línea 3 (diario_desfasado), gasto verdadero 33
+  - gasto 35 por monto_y_fecha; 2026-06 línea 4 (diario_desfasado), gasto verdadero 34
+  - gasto 36 por monto_y_fecha; 2026-06 línea 5 (diario_desfasado), gasto verdadero 35
+  - gasto 37 por monto_y_fecha; 2026-06 línea 7 (gemelos_otro_comercio), gasto verdadero ninguno
+  - gasto 38 por monto_y_descripcion; 2026-06 línea 9 (palabras_vacias), gasto verdadero ninguno
+  - gasto 39 por monto_y_descripcion; 2026-06 línea 10 (palabras_vacias), gasto verdadero ninguno
+  - gasto 40 por monto_y_descripcion; 2026-06 línea 11 (palabras_vacias), gasto verdadero ninguno
+  - gasto 41 por monto_3_dias; 2026-06 línea 12 (cruza_de_mes), gasto verdadero ninguno
+
+Pares que faltaron: 9
+  - 2026-03 línea 9 (exacto), gasto verdadero 5
+  - 2026-03 línea 16 (fecha_fuera_de_ventana), gasto verdadero 11
+  - 2026-05 línea 21 (mismo_monto_misma_semana), gasto verdadero 27
+  - 2026-05 línea 22 (mismo_monto_misma_semana), gasto verdadero 28
+  - 2026-06 línea 3 (diario_desfasado), gasto verdadero 33
+  - 2026-06 línea 4 (diario_desfasado), gasto verdadero 34
+  - 2026-06 línea 5 (diario_desfasado), gasto verdadero 35
+  - 2026-06 línea 6 (diario_desfasado), gasto verdadero 36
+  - 2026-07 línea 2 (cruza_de_mes), gasto verdadero 41
+
+Con los meses al revés: 2 pares distintos.
+  - 2026-06 línea 12 con el gasto 41: solo del más viejo al más nuevo
+  - 2026-07 línea 2 con el gasto 41: solo al revés

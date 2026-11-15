@@ -24,6 +24,10 @@ y una Mini App para verlo en el celular.
   nunca pasan por el LLM. → [presupuesto](docs/presupuesto.md)
 - **La misma lógica dos veces:** un pipeline en Python y un agente en n8n, con
   paridad probada en ~10.000 casos. → [n8n](n8n/README.md)
+- **Conciliación con el estado de cuenta, por reglas y sin LLM** (en construcción).
+  El cruce de cada cargo con su gasto hace 27 pares de 29, ninguno equivocado, sobre
+  un set sintético que es **de desarrollo**: las reglas se corrigieron mirándolo, así
+  que no es una medición sobre datos sin ver. → [conciliación](docs/conciliacion.md)
 - **Privacidad verificada:** un test revisa cada objeto del historial de git en
   busca de secretos, y las capturas usan datos sintéticos.
 

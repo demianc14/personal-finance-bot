@@ -37,7 +37,7 @@ Para probar sin tocar la base real:
 python scripts/estado_sintetico.py --base /tmp/sintetica.db
 ```
 
-Crea una base nueva con 32 gastos inventados y los estados de marzo, abril y mayo ya importados (48 movimientos). Se niega a escribir sobre un archivo que ya existe.
+Crea una base nueva con 41 gastos inventados y los estados de marzo a julio ya importados (61 movimientos). Se niega a escribir sobre un archivo que ya existe.
 
 ## Agregar un banco
 
@@ -79,95 +79,110 @@ Es una entrada en [`config/bancos.yaml`](../config/bancos.yaml), no código: nom
 family-expense-bot --conciliar 2026-03
 ```
 
-Cruza los movimientos de ese mes con los gastos registrados y guarda cada par en `conciliaciones` con la regla que lo unió. Dice cuántos pares hizo cada regla, cuántos débitos quedaron sin conciliar y cuántos de ellos por empate. Correrlo dos veces no duplica nada, y un par anulado puede volver a cruzarse. Un movimiento sin par **no** se guarda como gasto: proponerlo es otra fase.
+Cruza los movimientos con los gastos registrados y guarda cada par en `conciliaciones` con la regla que lo unió. Dice cuántos pares hizo cada regla, cuántos débitos quedaron sin conciliar y cuántos de ellos por empate. Correrlo dos veces no duplica nada, y un par anulado puede volver a cruzarse. Un movimiento sin par **no** se guarda como gasto: proponerlo es otra fase.
+
+**El mes solo filtra lo que se muestra.** El cruce mira siempre todos los movimientos libres de la base, y guarda también los pares de otros meses (dice cuántos fueron). Así el resultado no depende de qué mes se concilia primero: el cargo del 30 de marzo compite por el gasto del 1 de abril con el cargo del 1 de abril, que es el suyo.
 
 Antes de cruzar, `--conciliar` audita las conciliaciones que ya hay. Si alguna está rota, no cruza nada y dice cuáles son (ver [Integridad](#integridad-de-las-conciliaciones)).
 
-Las reglas son deterministas, sin LLM, y van en orden. Cada una corre sobre lo que la anterior dejó libre:
+Las reglas son deterministas y sin LLM:
 
-| Orden | Regla | Qué pide |
+| Regla | Qué pide | Estado |
 |---|---|---|
-| 1 | `monto_y_fecha` | Monto exacto y la misma fecha |
-| 2 | `monto_3_dias` | Monto exacto y hasta 3 días de diferencia |
-| 3 | `monto_y_descripcion` | Monto exacto, hasta 10 días y descripción parecida |
+| `monto_y_fecha` | Monto exacto y la misma fecha | Activa |
+| `monto_3_dias` | Monto exacto y de 1 a 3 días de diferencia | Activa |
+| `monto_y_descripcion` | Monto exacto, hasta 10 días y descripción parecida | **Apagada por defecto** |
 
 - **Solo cruzan los débitos.** Comisiones, intereses, pagos de tarjeta y todo lo que entra (una devolución) nunca se unen a un gasto.
-- **Descripción parecida:** dos palabras en común, o una sola si no está en `palabras_genericas` de [`config/bancos.yaml`](../config/bancos.yaml). Las palabras se comparan sin tildes ni mayúsculas, sin números y con cuatro letras o más. Del gasto cuentan la descripción, la subcategoría y el texto original.
-- **Cuando varios compiten** gana el más cercano en días y luego el que comparte más palabras, y el par solo se acepta si la elección es mutua. Si siguen empatados no se une ninguno, salvo los gemelos exactos (ver [decisiones](decisiones.md#reglas-de-cruce-14-nov-2026)).
+- **Las dos primeras se deciden juntas.** Los cargos y gastos del mismo monto a tres días o menos forman un grupo, y en cada grupo se elige la asignación uno a uno que une más pares y, entre esas, la que suma menos días. El nombre de la regla sale después, de la distancia de cada par. Decidir primero "misma fecha" era un fallo: con el mismo almuerzo todos los días, el cargo de hoy se llevaba el gasto de hoy aunque fuera el de ayer.
+- **Desempates, en orden:** más palabras distintivas en común entre la descripción del banco y el texto del gasto, y después el orden de las fechas (el primer gasto con el primer cargo). Una palabra es distintiva si no está en `palabras_genericas` de [`config/bancos.yaml`](../config/bancos.yaml). Las palabras se comparan sin tildes ni mayúsculas, sin números y con cuatro letras o más. Del gasto cuentan la descripción, la subcategoría y el texto original.
+- **Si la mejor asignación no es única, no se une nadie del grupo.** Un par mal unido esconde un gasto sin registrar; uno sin unir solo queda pendiente.
+- **Gemelos:** dos cargos del mismo monto son intercambiables solo si tienen la misma fecha y la misma descripción. Dos cargos iguales de comercios distintos no lo son: si el texto del gasto no nombra a uno, no se une ninguno.
+- **La regla por descripción se enciende con `regla_descripcion: true`** en `config/bancos.yaml`, y corre después sobre lo que quedó libre. Está apagada porque no tiene ningún par correcto medido (0 pares en la medición de la PR #25) y unió tres pares falsos por palabras vacías: "quito", "para" y "compra online". No conviene encenderla sin una medición nueva.
+
+El algoritmo y sus motivos están en [decisiones](decisiones.md#reglas-de-cruce-revisión-del-14-nov-2026).
 
 ### Medición
-
-Las reglas se congelaron en el commit `c7694f0` y se midieron **una vez** contra `evals/pares_verdaderos.csv` (53 filas que salen del generador sintético, no de las reglas). La salida completa está en [`evals/corridas/cruce-c7694f0.txt`](../evals/corridas/cruce-c7694f0.txt).
 
 ```bash
 python scripts/medir_cruce.py
 ```
 
-Un par es correcto solo si el movimiento tenía exactamente ese gasto. El recall es sobre los 24 pares uno a uno que había que encontrar; los 3 pagos partidos se cuentan aparte.
+Arma la base sintética, concilia mes por mes de marzo a julio (como se usa `--conciliar`), compara con `evals/pares_verdaderos.csv` (69 filas que salen del generador sintético, no de las reglas) y repite todo con los meses al revés. La salida completa está en [`evals/corridas/cruce-e703909.txt`](../evals/corridas/cruce-e703909.txt).
+
+**Este set es de desarrollo.** Las reglas se corrigieron después de ver la medición de la PR #25 y los cuatro fallos de la revisión, que ahora son parte del set. Las cifras de abajo dicen que las reglas hacen lo que se les pidió en los casos conocidos; no son una medición sobre datos sin ver, y hoy no hay un set aparte para eso.
+
+Un par es correcto solo si el movimiento tenía exactamente ese gasto. El recall es sobre los 29 pares uno a uno que había que encontrar; los pagos partidos y la abstención esperada se cuentan aparte.
 
 | Regla | Pares hechos | Correctos | Precisión | Recall (aporte) |
 |---|---|---|---|---|
-| `monto_y_fecha` | 13 | 13 | 100% | 13 de 24 (54%) |
-| `monto_3_dias` | 7 | 7 | 100% | 7 de 24 (29%) |
-| `monto_y_descripcion` | 0 | 0 | — | 0 de 24 (0%) |
-| Total | 20 | 20 | 100% | 20 de 24 (83%) |
+| `monto_y_fecha` | 14 | 14 | 100% | 14 de 29 (48%) |
+| `monto_3_dias` | 13 | 13 | 100% | 13 de 29 (45%) |
+| `monto_y_descripcion` | 0 | 0 | — | 0 de 29 (0%) |
+| Total | 27 | 27 | 100% | 27 de 29 (93%) |
 
 | categoria_caso | Filas | Pares a encontrar | Unidos | Correctos | Precisión | Recall |
 |---|---|---|---|---|---|---|
 | `exacto` | 12 | 12 | 11 | 11 | 100% | 92% |
-| `movimiento_sin_gasto` | 10 | 0 | 0 | 0 | — | — |
+| `movimiento_sin_gasto` | 11 | 0 | 0 | 0 | — | — |
 | `fecha_desfasada` | 6 | 6 | 6 | 6 | 100% | 100% |
-| `mismo_monto_misma_semana` | 6 | 5 | 3 | 3 | 100% | 60% |
-| `comision` | 6 | 0 | 0 | 0 | — | — |
+| `mismo_monto_misma_semana` | 6 | 5 | 5 | 5 | 100% | 100% |
+| `comision` | 7 | 0 | 0 | 0 | — | — |
 | `fecha_fuera_de_ventana` | 1 | 1 | 0 | 0 | — | 0% |
 | `interes` | 2 | 0 | 0 | 0 | — | — |
 | `devolucion` | 2 | 0 | 0 | 0 | — | — |
 | `pago_partido` | 3 | 0 | 0 | 0 | — | — |
-| `gasto_sin_movimiento` | 5 | 0 | 0 | 0 | — | — |
+| `diario_desfasado` | 4 | 4 | 4 | 4 | 100% | 100% |
+| `gemelos_otro_comercio` | 2 | 0 | 0 | 0 | — | — |
+| `palabras_vacias` | 3 | 0 | 0 | 0 | — | — |
+| `cruza_de_mes` | 2 | 1 | 1 | 1 | 100% | 100% |
+| `gasto_sin_movimiento` | 8 | 0 | 0 | 0 | — | — |
 
-Quedaron 15 débitos sin conciliar, 2 de ellos por empate. Ningún par salió equivocado.
-
-**La precisión de la regla 3 no quedó medida:** no hizo ningún par en este set, así que no hay nada que contar. Solo se sabe que no unió nada de más.
+Quedaron 19 débitos sin conciliar, 2 de ellos por empate (los dos cargos de `gemelos_otro_comercio`, que es la abstención esperada). Ningún par salió equivocado, y con los meses al revés salieron los mismos 27 pares.
 
 **Pagos partidos (fallo esperado, 3 filas):** los tres quedaron sin unir, que es el límite declarado del uno a uno. Son un gasto de 100.00 pagado en dos cargos (60.00 y 40.00) y un cargo de 100.00 que eran dos gastos.
 
-**Los 4 pares que faltaron:**
+**Los 2 pares que faltaron:**
 
 | Movimiento | Gasto | Por qué no se unió |
 |---|---|---|
 | Marzo, línea 9: `PAGO TARJETA VISA`, 45.00 | "cuota de la tarjeta", mismo día | El movimiento es de tipo `pago` y solo cruzan los débitos. La verdad lo cuenta como `exacto`. |
-| Marzo, línea 16: `LIBRERIA SINTETICA`, 40.00 | "libros", 4 días antes | Fuera de ±3 días, y "libreria" y "libros" no son la misma palabra: la regla 3 compara palabras enteras. |
-| Mayo, líneas 21 y 22: `RESTAURANTE EL SINTETICO`, 12.00 (días 21 y 23) | Dos "almuerzo" de 12.00 (días 20 y 22) | Empate: el cargo del 21 queda a un día de los dos gastos, y el gasto del 22 a un día de los dos cargos. No se unió ninguno. |
+| Marzo, línea 16: `LIBRERIA SINTETICA`, 40.00 | "libros", 4 días antes | Fuera de ±3 días, y la regla por descripción está apagada. Encendida tampoco lo uniría: "libreria" y "libros" no son la misma palabra. |
 
-Las reglas no se tocaron después de ver estos resultados.
+Los dos almuerzos de mayo en días alternados, que en la medición anterior quedaron en empate, ahora se unen: la asignación de menor distancia total es única.
 
 ### Revisión de las reglas: criterio congelado
 
-Una revisión adversarial reprodujo cuatro fallos en estas reglas. Antes de cambiarlas se agregaron los cuatro casos al set sintético (los estados de junio y julio, 16 filas nuevas en `evals/pares_verdaderos.csv`) y se escribió este criterio. El commit que lo trae no toca `conciliacion/reglas.py`.
+Una revisión adversarial reprodujo cuatro fallos en las reglas de la PR #25. Antes de cambiarlas se agregaron los cuatro casos al set sintético (los estados de junio y julio, 16 filas nuevas en `evals/pares_verdaderos.csv`) y se escribió este criterio, en el commit `99a42c4`, que no toca `conciliacion/reglas.py`.
 
-| Fallo | Caso en el set | Qué hacen las reglas de la PR #25 | Qué se espera |
+| Fallo | Caso en el set | Qué hacían las reglas de la PR #25 | Qué se espera |
 |---|---|---|---|
-| B8 | `cruza_de_mes`: cargo del 30 de junio sin gasto, cargo igual del 1 de julio con su gasto | Si junio se concilia primero, el cargo de junio se lleva el gasto de julio | El gasto se une al cargo del 1 de julio, en cualquier orden de meses |
-| B6 | `diario_desfasado`: el mismo almuerzo cuatro días seguidos, cobrado cada uno al día siguiente | Une tres por la misma fecha, todos corridos, y deja un cargo suelto | Los cuatro pares, cada cargo con el gasto de la víspera |
-| B5 | `gemelos_otro_comercio`: dos cargos iguales el mismo día, de una farmacia y una ferretería, y un gasto que dice "arreglo de la casa" | Une el gasto al primero del archivo (la farmacia) | Abstención: ninguno de los dos se une |
-| B7 | `palabras_vacias`: tres cargos y tres gastos en efectivo del mismo monto que solo comparten "quito", "para" o "compra online" | La regla 3 une los tres | Ningún par |
+| B8 | `cruza_de_mes`: cargo del 30 de junio sin gasto, cargo igual del 1 de julio con su gasto | Si junio se conciliaba primero, el cargo de junio se llevaba el gasto de julio | El gasto se une al cargo del 1 de julio, en cualquier orden de meses |
+| B6 | `diario_desfasado`: el mismo almuerzo cuatro días seguidos, cobrado cada uno al día siguiente | Unía tres por la misma fecha, todos corridos, y dejaba un cargo suelto | Los cuatro pares, cada cargo con el gasto de la víspera |
+| B5 | `gemelos_otro_comercio`: dos cargos iguales el mismo día, de una farmacia y una ferretería, y un gasto que dice "arreglo de la casa" | Unía el gasto al primero del archivo (la farmacia) | Abstención: ninguno de los dos se une |
+| B7 | `palabras_vacias`: tres cargos y tres gastos en efectivo del mismo monto que solo comparten "quito", "para" o "compra online" | La regla 3 unía los tres | Ningún par |
 
-El criterio de éxito, sobre el set completo y conciliando mes por mes:
+El criterio, sobre el set completo y conciliando mes por mes, y lo que salió en la única corrida de las reglas nuevas (commit `e703909`):
 
-1. **Ningún par equivocado.**
-2. **Los 5 pares nuevos se encuentran** (4 de `diario_desfasado` y 1 de `cruza_de_mes`).
-3. **Abstención en `gemelos_otro_comercio`:** ninguno de los dos cargos se une, y los dos salen como empate.
-4. **Ningún par en `palabras_vacias`.**
-5. **Los 20 pares de la medición anterior siguen**, con el mismo gasto.
-6. **El orden de los meses no cambia nada:** conciliar de marzo a julio o de julio a marzo deja los mismos pares.
+| # | Criterio | Resultado |
+|---|---|---|
+| 1 | Ningún par equivocado | Cumple: 0 de 27 |
+| 2 | Los 5 pares nuevos se encuentran (4 de `diario_desfasado` y 1 de `cruza_de_mes`) | Cumple: 5 de 5 |
+| 3 | Abstención en `gemelos_otro_comercio`: ningún cargo se une y los dos salen como empate | Cumple |
+| 4 | Ningún par en `palabras_vacias` | Cumple: 0 |
+| 5 | Los 20 pares de la medición anterior siguen, con el mismo gasto | Cumple: 20 de 20 |
+| 6 | El orden de los meses no cambia nada | Cumple: 0 pares distintos |
 
-La corrida de las reglas viejas sobre el set nuevo, antes de implementar, queda guardada como línea de base: 28 pares, 8 equivocados (precisión 71 %) y 2 pares distintos según el orden de los meses.
+| | Reglas de la PR #25 | Reglas nuevas |
+|---|---|---|
+| Pares hechos | 28 | 27 |
+| Correctos | 20 | 27 |
+| Equivocados | 8 | 0 |
+| Precisión | 71% | 100% |
+| Recall | 20 de 29 (69%) | 27 de 29 (93%) |
+| Pares distintos con los meses al revés | 2 | 0 |
 
-```bash
-python scripts/medir_cruce.py
-```
-
-`scripts/medir_cruce.py` ahora concilia mes por mes, como se usa `--conciliar`, y repite todo con los meses al revés.
+La columna de la PR #25 es la corrida de las reglas viejas sobre el set nuevo, hecha antes de implementar: [`evals/corridas/cruce-99a42c4-antes.txt`](../evals/corridas/cruce-99a42c4-antes.txt). La medición original, sobre el set de 53 filas, sigue en [`evals/corridas/cruce-c7694f0.txt`](../evals/corridas/cruce-c7694f0.txt): 20 pares, 20 correctos, recall 20 de 24.
 
 ## Integridad de las conciliaciones
 
@@ -204,8 +219,12 @@ El primero es una simulación: lista los pares que anularía y no cambia nada. C
 - **El cruce es uno a uno.** Un cargo que son varios gastos, o un gasto pagado en dos cargos, queda sin conciliar.
 - **El pago de la tarjeta no cruza**, aunque esté registrado como gasto con el mismo monto y fecha.
 - **La descripción se compara por palabras enteras.** "Librería" y "libros" no coinciden, ni un comercio que el banco abrevia.
-- **Un empate no se resuelve mirando el conjunto.** Dos cargos y dos gastos del mismo monto en días alternados (gasto, cargo, gasto, cargo) quedan sin unir, aunque a ojo el orden sea claro.
-- **La regla 3 no tiene precisión medida**: el set sintético no le dio ningún par.
+- **Un gasto a más de tres días de su cargo no se une**, porque la regla por descripción está apagada.
+- **El cruce no sabe qué estados faltan por importar.** Mira todos los movimientos de la base, pero si abril todavía no se importó, el cargo del 30 de marzo se lleva el gasto del 1 de abril igual. Conviene conciliar un mes cuando ya está importado el siguiente; un par mal hecho se anula y vuelve a cruzarse.
+- **Un empate deja sin unir a todo su grupo.** Si el mismo monto se repite muchos días seguidos y en un punto hay dos asignaciones igual de buenas, no se une ningún cargo de esa racha, tampoco los que a ojo están claros.
+- **Las palabras vacías todavía pueden desempatar.** "Para" o "quito" no están en `palabras_genericas`, así que cuentan como distintivas si deciden entre dos candidatos del mismo monto a tres días o menos. No alcanzan para crear un par, solo para elegir entre dos.
+- **La regla por descripción no tiene precisión medida** y por eso está apagada.
+- **No hay un set sin ver.** Todo el set sintético es de desarrollo.
 - **Sin columna de saldo, solo se verifica el total.** Una fila perdida se nota porque el total no cuadra, pero no se sabe cuál fue. Dos errores que se compensan (+1 y −1 centavo) pasan sin que nada los delate: es el caso `errores_compensados_sin_saldo` de la tabla. Con columna de saldo, los dos se detectan en la línea exacta.
 - **Los avisos no quedan en la base.** Salen una vez, al importar. Después solo se pueden reconstruir comparando los saldos de dos estados seguidos.
 - **Una fila repetida suelta no se detecta por sí sola.** Si no es real, la delata el saldo.
