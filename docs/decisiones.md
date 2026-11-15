@@ -348,6 +348,41 @@ reimportarlo dejaba los gastos retenidos y todos los cargos sin conciliar.
 - **Al reparar un uno a uno roto se anulan todos los pares del grupo.** Elegir
   cuál queda sería adivinar; las reglas los vuelven a cruzar.
 
+### Carreras y huecos de la auditoría (15-nov-2026)
+
+Una segunda revisión adversarial, sobre las PR #27 y #29, reprodujo carreras
+entre leer y escribir y pares rotos que la auditoría no veía.
+
+- **Las transacciones las abre el código, no pysqlite.** pysqlite no emite
+  `BEGIN` hasta el primer INSERT o UPDATE, así que lo leído antes quedaba
+  fuera de la transacción: dos ediciones del mismo gasto dejaban dos gastos
+  vigentes, y un gasto borrado mientras `--conciliar` elegía pares quedaba
+  unido igual. Ahora `preparar_sqlite` le quita ese manejo y emite el `BEGIN`
+  en el evento `begin` de SQLAlchemy.
+- **`BEGIN IMMEDIATE` solo para quien escribe** (`para_escribir(engine)`). La
+  alternativa era hacerlo en toda transacción: más simple, pero las lecturas
+  de la Mini App harían cola detrás de cualquier escritura. Va por evento de
+  conexión y no por un `execute` explícito porque la transacción de
+  `conciliar` vive en `reglas.py`, que no se tocó: la CLI le pasa el engine de
+  escritura.
+- **Editar hereda el par si no cambian monto ni fecha** (cambia la decisión del
+  14-nov). Son los únicos dos campos que miran las reglas, así que el par
+  sigue siendo el que las reglas habrían hecho, y corregir una categoría ya no
+  des-concilia el gasto. Se anula el par viejo y se crea uno nuevo con la misma
+  regla, en vez de cambiar `gasto_id` en la fila: es el mismo "editar = anular
+  + crear" de los gastos y deja la historia.
+- **La auditoría usa LEFT JOIN y revisa que el par calce.** Con JOIN, un par
+  cuyo gasto o movimiento se borró a mano desaparecía de la consulta y pasaba
+  por sano. La ventana de fecha es la de la regla que unió el par, leída de
+  `REGLAS`; una regla desconocida usa la más ancha.
+- **`--anular-par` es simulación por defecto**, como `--reparar-integridad`, y
+  exige `--motivo`. Límite conocido: las reglas no recuerdan el rechazo y el
+  siguiente `--conciliar` puede volver a unir el mismo par. Recordarlo exige
+  cambiar `reglas.py` y queda para otra PR.
+- **La auditoría y el cruce de `--conciliar` siguen en dos transacciones.**
+  Unirlas exige tocar `reglas.py`. Lo que pase entre las dos lo frenan los
+  índices únicos, y la CLI lo informa sin guardar nada.
+
 ## Privacidad
 
 El repo es público. La base de datos, los exports y el `.env` están en

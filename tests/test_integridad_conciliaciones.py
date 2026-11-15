@@ -138,12 +138,13 @@ def conciliada(engine: Engine, tmp_path: Path) -> tuple[Engine, GastoRegistrado,
 # --- B1: editar un gasto conciliado -----------------------------------------
 
 
-def test_editar_un_gasto_conciliado_anula_el_par_y_el_nuevo_vuelve_a_cruzar(
+def test_editar_la_fecha_de_un_gasto_conciliado_anula_el_par_y_el_nuevo_vuelve_a_cruzar(
     conciliada: tuple[Engine, GastoRegistrado, Path],
 ) -> None:
+    """Si no cambian monto ni fecha el par se hereda: ver `test_carreras_conciliacion.py`."""
     engine, gasto, _ = conciliada
     nuevo = RepositorioGastos(engine).reemplazar(
-        gasto.id, _extraido(2, "85.40", "supermercado del barrio"), QUIEN, "formulario"
+        gasto.id, _extraido(3, "85.40", "supermercado del barrio"), QUIEN, "formulario"
     )
     assert nuevo is not None
     assert _pares(engine) == []
@@ -151,7 +152,7 @@ def test_editar_un_gasto_conciliado_anula_el_par_y_el_nuevo_vuelve_a_cruzar(
     auditar_integridad(engine)
 
     assert _conciliar(engine) == (1, 0)
-    assert _pares(engine) == [(2, nuevo.id, "monto_y_fecha")]
+    assert _pares(engine) == [(2, nuevo.id, "monto_3_dias")]
 
 
 def test_editar_el_monto_de_un_gasto_conciliado_deja_el_cargo_sin_conciliar(
@@ -166,7 +167,7 @@ def test_editar_un_gasto_no_toca_los_pares_de_otros(engine: Engine, tmp_path: Pa
     super_, cine = _gasto(engine, 2, "85.40"), _gasto(engine, 12, "35.00")
     _importar(engine, _csv(tmp_path, [SUPER, CINE]), [SUPER, CINE])
     _conciliar(engine)
-    RepositorioGastos(engine).reemplazar(cine.id, _extraido(12, "35.00", "cine"), QUIEN, "chat")
+    RepositorioGastos(engine).reemplazar(cine.id, _extraido(12, "53.00", "cine"), QUIEN, "chat")
     assert _pares(engine) == [(2, super_.id, "monto_y_fecha")]
 
 
