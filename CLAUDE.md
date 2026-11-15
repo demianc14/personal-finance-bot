@@ -241,6 +241,7 @@ src/family_expense_bot/
     importar.py          # leer + verificar + guardar todo o nada
     reglas.py            # reglas de cruce movimiento ↔ gasto, en orden y con nombre (--conciliar)
     medicion.py          # precisión y recall del cruce contra evals/pares_verdaderos.csv
+    integridad.py        # auditoría de pares vigentes rotos y su reparación (--reparar-integridad)
     recurrentes.py       # (por construir) suscripciones y cargos que se repiten
   evaluacion.py          # banco etiquetado contra el LLM real (--evaluar)
   config.py

@@ -268,6 +268,35 @@ parecida). El detalle y la medición están en [conciliacion.md](conciliacion.md
 - **Las reglas se congelaron en un commit antes de medir** (`c7694f0`) y se
   midieron una vez. No se ajustan mirando `evals/pares_verdaderos.csv`.
 
+### Integridad de las conciliaciones (14-nov-2026)
+
+Una revisión adversarial encontró que nada anulaba un par cuando se anulaba su
+gasto o su estado. Editar o borrar un gasto conciliado dejaba el cargo unido a
+un gasto anulado (y nunca saldría como "sin registrar"); anular un estado y
+reimportarlo dejaba los gastos retenidos y todos los cargos sin conciliar.
+
+- **La anulación arrastra el par, en el repositorio y en la misma
+  transacción.** `RepositorioGastos.anular` y `reemplazar`, y
+  `RepositorioEstados.anular` (nuevo), anulan las conciliaciones vigentes que
+  los referencian. Anular un estado anula también sus movimientos.
+- **Editar no hereda el par.** El gasto nuevo queda libre y vuelve a cruzarse:
+  la edición pudo cambiar el monto o la fecha, y pasarle el par sería decidir
+  una conciliación sin regla.
+- **Descartado: un trigger SQL.** Haría lo mismo, pero es lógica escondida en
+  la base: no se lee con el resto del repositorio, `create_all` no lo crea ni
+  `verificar_esquema` lo exige, y no hay cómo llevarlo igual a n8n.
+- **Descartado: "vigente" derivado por JOIN** (el par vale mientras valgan su
+  gasto y su estado, sin anularlo). El uno a uno lo garantizan dos índices
+  únicos parciales sobre `conciliaciones.anulado_en`, y un índice no puede
+  mirar otra tabla: el gasto de un estado anulado seguiría ocupado en el
+  índice y no se podría volver a cruzar.
+- **`auditar_integridad` revisa lo que los repositorios prometen**, y
+  `--conciliar` no cruza sobre una base rota. Reparar es explícito
+  (`--reparar-integridad`, simulación por defecto) y nunca automático: anular
+  pares cambia qué aparece como "sin registrar".
+- **Al reparar un uno a uno roto se anulan todos los pares del grupo.** Elegir
+  cuál queda sería adivinar; las reglas los vuelven a cruzar.
+
 ## Privacidad
 
 El repo es público. La base de datos, los exports y el `.env` están en

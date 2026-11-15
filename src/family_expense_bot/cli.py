@@ -17,6 +17,11 @@ from family_expense_bot.conciliacion.bancos import cargar_bancos
 from family_expense_bot.conciliacion.contrato import EstadoRechazado, plata
 from family_expense_bot.conciliacion.importar import importar_estado
 from family_expense_bot.conciliacion.ingesta import centavos_declarados
+from family_expense_bot.conciliacion.integridad import (
+    IntegridadRota,
+    auditar_integridad,
+    reparar_integridad,
+)
 from family_expense_bot.conciliacion.reglas import conciliar
 from family_expense_bot.config import Settings
 from family_expense_bot.dashboard.report import exportar_csv
@@ -162,12 +167,25 @@ def _parser() -> argparse.ArgumentParser:
         "deterministas y sin LLM. Guarda cada par con la regla que lo unió; los movimientos "
         "sin par no se guardan como gasto.",
     )
+    parser.add_argument(
+        "--reparar-integridad",
+        action="store_true",
+        help="Lista las conciliaciones vigentes rotas (sobre un gasto o un estado anulado, o "
+        "repetidas) y no cambia nada. Con --confirmar las anula.",
+    )
+    parser.add_argument(
+        "--confirmar",
+        action="store_true",
+        help="Con --reparar-integridad: anula de verdad los pares rotos, en una transacción.",
+    )
     return parser
 
 
 def main() -> None:
     parser = _parser()
     args = parser.parse_args()
+    if args.confirmar and not args.reparar_integridad:
+        parser.error("--confirmar solo va con --reparar-integridad")
 
     _configurar_logging()
     if args.evaluar and args.desde_corrida:
@@ -194,6 +212,10 @@ def main() -> None:
 
     if args.importar_estado:
         _importar_estado(parser, args, settings)
+        return
+
+    if args.reparar_integridad:
+        _reparar_integridad(args.confirmar, settings)
         return
 
     if args.conciliar:
@@ -337,6 +359,16 @@ def _conciliar(desde: date, hasta: date, settings: Settings) -> None:
         engine = crear_engine(settings.database_url)
     except EsquemaDesactualizado as e:
         raise SystemExit(f"No concilio: {e}") from e
+    try:
+        auditar_integridad(engine)
+    except IntegridadRota as e:
+        rotos = "\n".join(f"  - {par.mensaje}" for par in e.pares)
+        raise SystemExit(
+            f"No concilio: hay {len(e.pares)} conciliaciones vigentes rotas y no se guardó nada.\n"
+            f"{rotos}\n"
+            "Corre `family-expense-bot --reparar-integridad` para ver qué anularía, y con "
+            "--confirmar para anularlas."
+        ) from e
     cruce = conciliar(engine, cargar_bancos().genericas, desde, hasta)
     reglas = ", ".join(f"{regla} {cuantos}" for regla, cuantos in cruce.por_regla.items())
     print(f"Conciliación de {desde:%Y-%m}: {len(cruce.pares)} pares nuevos ({reglas}).")
@@ -344,6 +376,28 @@ def _conciliar(desde: date, hasta: date, settings: Settings) -> None:
         f"  Quedan {cruce.sin_conciliar} débitos sin conciliar; {len(cruce.empatados)} de ellos "
         "por empate entre candidatos iguales."
     )
+
+
+def _reparar_integridad(confirmar: bool, settings: Settings) -> None:
+    try:
+        engine = crear_engine(settings.database_url)
+    except EsquemaDesactualizado as e:
+        raise SystemExit(f"No reparo: {e}") from e
+    pares = reparar_integridad(engine, confirmar=confirmar)
+    if not pares:
+        print("Las conciliaciones están íntegras: no hay nada que reparar.")
+        return
+    cuantos = f"{len(pares)} par" if len(pares) == 1 else f"{len(pares)} pares"
+    if confirmar:
+        print(f"Reparado: {cuantos} anulado{'' if len(pares) == 1 else 's'}.")
+    else:
+        print(f"Simulación: se anularía {cuantos}. No se cambió nada.")
+    for par in pares:
+        print(f"  - {par.mensaje}")
+    if confirmar:
+        print("  Corre --conciliar de nuevo: lo que quedó libre vuelve a cruzarse.")
+    else:
+        print("  Para anularlos: family-expense-bot --reparar-integridad --confirmar")
 
 
 def _cliente_gemini(settings: Settings, modelo: str | None = None) -> GeminiCliente:
