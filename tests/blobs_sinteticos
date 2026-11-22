@@ -1,0 +1,9 @@
+# Versiones viejas de los archivos sintéticos que siguen en el historial de git.
+#
+# tests/test_privacy.py revisa cada versión de un archivo de datos que alguna vez
+# entró a un commit: tiene que ser lo que genera hoy scripts/estado_sintetico.py
+# o estar en esta lista. Cada línea es `<blob> <ruta> <commit>`, donde el commit
+# es aquel cuyo generador produce ese blob byte a byte (verificado al agregarla,
+# corriendo el script de ese commit). Al regenerar los fixtures, el test falla y
+# dice qué versiones faltan: son las que salían del script antes del cambio.
+f1e8dca1e9ee5fc98edbe2186f837faad9d256e9 evals/pares_verdaderos.csv bf44fcd709d25b8c4a0fa2ca211b7ace91d24c58
