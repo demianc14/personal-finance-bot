@@ -5,7 +5,7 @@ Lo único que este módulo impone son invariantes de integridad: no se guarda un
 gasto sin monto, y nada se borra de verdad.
 """
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
@@ -588,19 +588,29 @@ class RepositorioEstados:
 
     def vigentes(self) -> list[EstadoVigente]:
         """Los estados sin anular, sin sus movimientos, del más viejo al más nuevo."""
+        with self._sesion() as sesion:
+            return self._vigentes(sesion)
+
+    @staticmethod
+    def _vigentes(sesion: Session) -> list[EstadoVigente]:
         consulta = (
             select(EstadoCuenta)
             .where(EstadoCuenta.anulado_en.is_(None))
             .order_by(EstadoCuenta.periodo_desde, EstadoCuenta.id)
         )
-        with self._sesion() as sesion:
-            return [self._vigente(fila) for fila in sesion.scalars(consulta)]
+        return [RepositorioEstados._vigente(fila) for fila in sesion.scalars(consulta)]
 
-    def guardar(self, estado: EstadoLeido) -> EstadoVigente:
-        """Guarda un estado **ya verificado** con todos sus movimientos, o nada.
+    def guardar(
+        self, estado: EstadoLeido, *, revisar: Callable[[list[EstadoVigente]], None]
+    ) -> EstadoVigente:
+        """Guarda un estado con todos sus movimientos, o nada.
 
-        Una sola transacción: si la base rechaza un movimiento, o el archivo ya
-        estaba importado (índice único del hash), no queda ni el estado.
+        Una sola transacción con el candado de escritura tomado desde el principio
+        (`BEGIN IMMEDIATE`): lee los estados vigentes, se los pasa a `revisar` (que
+        lanza si el estado no entra, y entonces no se guarda nada) y recién ahí
+        escribe. Así nadie importa un periodo que se cruce entre la revisión y el
+        guardado. Si la base rechaza un movimiento, o el archivo ya estaba
+        importado (índice único del hash), tampoco queda el estado.
         """
         fila = EstadoCuenta(
             banco=estado.banco,
@@ -612,6 +622,7 @@ class RepositorioEstados:
             hash_archivo=estado.hash_archivo,
         )
         with self._escritura.begin() as sesion:
+            revisar(self._vigentes(sesion))
             sesion.add(fila)
             sesion.flush()  # para conocer el id del estado antes de colgarle los movimientos
             sesion.add_all(

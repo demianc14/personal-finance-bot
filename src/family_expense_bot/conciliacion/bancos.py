@@ -10,8 +10,16 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from family_expense_bot.conciliacion.contrato import TipoMovimiento
 from family_expense_bot.extraction.categorias import menciona_alguna, normalizar
+from family_expense_bot.storage.dinero import MAXIMO_CENTAVOS
 
 RUTA_POR_DEFECTO = Path(__file__).resolve().parents[3] / "config" / "bancos.yaml"
+
+_CUENTA = re.compile(r"[a-z][a-z0-9_-]{0,39}")
+
+
+def es_etiqueta_de_cuenta(texto: str) -> bool:
+    """Minúsculas, hasta 40 caracteres y sin cuatro dígitos seguidos: nunca el número."""
+    return _CUENTA.fullmatch(texto) is not None and re.search(r"\d{4}", texto) is None
 
 
 class Columnas(BaseModel):
@@ -76,6 +84,22 @@ class Banco(BaseModel):
     es una tarjeta: el consumo va en positivo y el saldo es lo que se debe."""
     tipos: list[ReglaTipo] = []
     """En orden: gana la primera que coincide."""
+    cuentas: list[str] = Field(min_length=1)
+    """Las etiquetas de cuenta que se aceptan al importar ("ahorros", "visa"). Una
+    que no esté acá se rechaza: un error de tipeo no abre una cuenta nueva."""
+
+    @field_validator("cuentas")
+    @classmethod
+    def _cuentas_validas(cls, v: list[str]) -> list[str]:
+        for cuenta in v:
+            if not es_etiqueta_de_cuenta(cuenta):
+                raise ValueError(
+                    f"la cuenta {cuenta!r} no es una etiqueta válida: minúsculas, hasta 40 "
+                    "caracteres y nunca el número de cuenta"
+                )
+        if len(v) != len(set(v)):
+            raise ValueError("`cuentas` trae una cuenta repetida")
+        return v
 
     @field_validator("formato_fecha")
     @classmethod
@@ -91,11 +115,29 @@ class Banco(BaseModel):
         return self
 
 
+class Topes(BaseModel):
+    """Límites de cordura de un estado. Lo que se pasa se rechaza, no se recorta."""
+
+    model_config = ConfigDict(frozen=True)
+
+    bytes: int = Field(gt=0)
+    """Un archivo más grande se rechaza antes de leerlo."""
+    filas: int = Field(gt=0)
+    """Movimientos por estado."""
+    monto_centavos: int = Field(gt=0, le=MAXIMO_CENTAVOS)
+    """Valor absoluto de un solo movimiento."""
+
+
 class Bancos(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     tope_bytes: int = Field(gt=0)
     """Un archivo más grande se rechaza antes de leerlo."""
+    tope_filas: int = Field(gt=0)
+    """Un estado con más movimientos se rechaza: uno mensual trae decenas."""
+    tope_monto: int = Field(gt=0, le=MAXIMO_CENTAVOS // 100)
+    """En unidades enteras (dólares). Un movimiento más grande se rechaza: es un
+    signo o un separador mal leído antes que un gasto real."""
     bancos: dict[str, Banco]
     palabras_genericas: list[str] = []
     """Palabras que no distinguen un comercio de otro ("compra", "pago"). Las usa
@@ -116,6 +158,12 @@ class Bancos(BaseModel):
                     "solo letras y de cuatro o más"
                 )
         return v
+
+    @property
+    def topes(self) -> Topes:
+        return Topes(
+            bytes=self.tope_bytes, filas=self.tope_filas, monto_centavos=self.tope_monto * 100
+        )
 
     @property
     def genericas(self) -> frozenset[str]:

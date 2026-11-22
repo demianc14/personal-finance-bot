@@ -560,7 +560,7 @@ CASOS = [
         "continuidad",
         "Abril empieza con un saldo distinto del que cerró marzo",
         "abril_otro_saldo.csv",
-        avisos=1,
+        ("continuidad",),
         abril=True,
         saldos=(_SALDOS_ABRIL[0] - 100, _SALDOS_ABRIL[1] - 100),
         despues_de_marzo=True,
@@ -593,7 +593,7 @@ def correr(caso: Caso, carpeta: Path) -> Importacion | EstadoRechazado:
             cuenta="ahorros",
             desde=ABRIL_DESDE if un_caso.abril else MARZO_DESDE,
             hasta=ABRIL_HASTA if un_caso.abril else MARZO_HASTA,
-            tope_bytes=bancos.tope_bytes,
+            topes=bancos.topes,
             saldo_anterior_centavos=anterior,
             saldo_final_centavos=final,
         )
@@ -721,7 +721,7 @@ def base_sintetica(ruta: Path) -> tuple[int, int]:
                 cuenta="ahorros",
                 desde=desde,
                 hasta=hasta,
-                tope_bytes=bancos.tope_bytes,
+                topes=bancos.topes,
                 saldo_anterior_centavos=anterior,
                 saldo_final_centavos=final,
             ).movimientos

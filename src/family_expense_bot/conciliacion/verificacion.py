@@ -14,6 +14,7 @@ Qué alcanza a ver, según lo que traiga el banco:
   compensan (+1 y -1 centavo) pasan sin que nada los delate.
 """
 
+from bisect import bisect_right
 from collections import defaultdict
 from collections.abc import Sequence
 from datetime import timedelta
@@ -62,7 +63,8 @@ def verificar(estado: EstadoLeido, vigentes: Sequence[EstadoVigente] = ()) -> Ve
     if no_cuadra is not None:
         problemas.append(no_cuadra)
 
-    avisos = _continuidad(estado, de_la_cuenta)
+    rotas, avisos = _continuidad(estado, de_la_cuenta)
+    problemas.extend(rotas)
     bloque = _bloque_duplicado(estado.movimientos)
     if bloque is not None:
         primero, segundo = bloque
@@ -173,28 +175,62 @@ def _periodos_solapados(estado: EstadoLeido, de_la_cuenta: list[EstadoVigente]) 
     ]
 
 
-def _continuidad(estado: EstadoLeido, de_la_cuenta: list[EstadoVigente]) -> list[str]:
-    """El saldo final de un estado es el anterior del siguiente. Si no, avisa: no rechaza."""
-    avisos = []
+def _continuidad(
+    estado: EstadoLeido, de_la_cuenta: list[EstadoVigente]
+) -> tuple[list[Problema], list[str]]:
+    """El saldo final de un estado es el anterior del siguiente, o el estado no entra.
+
+    Se compara con el vecino más cercano de cada lado. Si es contiguo y el saldo no
+    encadena, se rechaza; si entre los dos faltan días, no hay con qué comparar y
+    solo se avisa. Con un periodo solapado no se mira: ya se rechaza por eso.
+
+    No ve un cargo y su reverso inventados (suman cero): ver docs/conciliacion.md.
+    """
+    problemas: list[Problema] = []
+    avisos: list[str] = []
     un_dia = timedelta(days=1)
-    for v in de_la_cuenta:
-        if v.periodo_hasta + un_dia == estado.periodo_desde:
-            diferencia = estado.saldo_anterior_centavos - v.saldo_final_centavos
-            if diferencia:
-                avisos.append(
-                    f"El estado #{v.id} ({_periodo(v)}) cerró con {plata(v.saldo_final_centavos)} "
-                    f"y este empieza con {plata(estado.saldo_anterior_centavos)}: hay "
-                    f"{plata(diferencia)} de diferencia entre los dos."
+    antes = [v for v in de_la_cuenta if v.periodo_hasta < estado.periodo_desde]
+    despues = [v for v in de_la_cuenta if v.periodo_desde > estado.periodo_hasta]
+    if antes:
+        v = max(antes, key=lambda e: (e.periodo_hasta, e.id))
+        if v.periodo_hasta + un_dia < estado.periodo_desde:
+            avisos.append(
+                f"Entre el estado #{v.id} ({_periodo(v)}) y este faltan los días "
+                f"{v.periodo_hasta + un_dia} a {estado.periodo_desde - un_dia}: la continuidad "
+                "del saldo no se pudo verificar."
+            )
+        elif diferencia := estado.saldo_anterior_centavos - v.saldo_final_centavos:
+            problemas.append(
+                Problema(
+                    codigo="continuidad",
+                    mensaje=f"El estado #{v.id} ({_periodo(v)}) cerró con "
+                    f"{plata(v.saldo_final_centavos)} y este empieza con "
+                    f"{plata(estado.saldo_anterior_centavos)}: hay {plata(diferencia)} de "
+                    "diferencia entre los dos.",
                 )
-        if estado.periodo_hasta + un_dia == v.periodo_desde:
-            diferencia = v.saldo_anterior_centavos - estado.saldo_final_centavos
-            if diferencia:
-                avisos.append(
-                    f"Este estado cierra con {plata(estado.saldo_final_centavos)} y el #{v.id} "
-                    f"({_periodo(v)}) empieza con {plata(v.saldo_anterior_centavos)}: hay "
-                    f"{plata(diferencia)} de diferencia entre los dos."
+            )
+    if despues:
+        v = min(despues, key=lambda e: (e.periodo_desde, e.id))
+        if estado.periodo_hasta + un_dia < v.periodo_desde:
+            avisos.append(
+                f"Entre este estado y el #{v.id} ({_periodo(v)}) faltan los días "
+                f"{estado.periodo_hasta + un_dia} a {v.periodo_desde - un_dia}: la continuidad "
+                "del saldo no se pudo verificar."
+            )
+        elif diferencia := v.saldo_anterior_centavos - estado.saldo_final_centavos:
+            problemas.append(
+                Problema(
+                    codigo="continuidad",
+                    mensaje=f"Este estado cierra con {plata(estado.saldo_final_centavos)} y el "
+                    f"#{v.id} ({_periodo(v)}) empieza con {plata(v.saldo_anterior_centavos)}: "
+                    f"hay {plata(diferencia)} de diferencia entre los dos.",
                 )
-    return avisos
+            )
+    return problemas, avisos
+
+
+_BASE_HASH = 1_000_003
+_MODULO_HASH = (1 << 61) - 1
 
 
 def _bloque_duplicado(
@@ -204,17 +240,39 @@ def _bloque_duplicado(
 
     Compara fecha, descripción y monto. Una sola fila repetida no cuenta: dos
     cargos idénticos el mismo día son dos movimientos.
+
+    Un bloque de dos o más filas que se repite empieza con el mismo par de filas
+    seguidas: solo se prueban esas posiciones, no todas las de cada fila igual. Y
+    dos tramos se comparan por un hash de prefijos, en tiempo constante; si el
+    hash coincide se comparan de verdad, así que una colisión no da un falso bloque.
     """
-    filas = [(m.fecha, m.descripcion, m.monto_centavos) for m in movimientos]
-    posiciones = defaultdict(list)
-    for i, fila in enumerate(filas):
-        posiciones[fila].append(i)
-    for i, fila in enumerate(filas):
+    ids: dict[tuple[object, ...], int] = {}
+    filas = [
+        ids.setdefault((m.fecha, m.descripcion, m.monto_centavos), len(ids) + 1)
+        for m in movimientos
+    ]
+    n = len(filas)
+    prefijo = [0] * (n + 1)
+    potencia = [1] * (n + 1)
+    for k, fila in enumerate(filas):
+        prefijo[k + 1] = (prefijo[k] * _BASE_HASH + fila) % _MODULO_HASH
+        potencia[k + 1] = (potencia[k] * _BASE_HASH) % _MODULO_HASH
+
+    def tramo(desde: int, hasta: int) -> int:
+        return (prefijo[hasta] - prefijo[desde] * potencia[hasta - desde]) % _MODULO_HASH
+
+    pares: defaultdict[tuple[int, int], list[int]] = defaultdict(list)
+    for k in range(n - 1):
+        pares[(filas[k], filas[k + 1])].append(k)
+    for i in range(n - 1):
+        candidatos = pares[(filas[i], filas[i + 1])]
+        # El bloque i..j cabe entero si j + (j - i) <= n, o sea j <= (n + i) // 2.
         # De la repetición más lejana a la más cercana: gana el bloque más largo.
-        for j in reversed(posiciones[fila]):
+        tope = bisect_right(candidatos, (n + i) // 2)
+        for j in reversed(candidatos[:tope]):
             largo = j - i
             if largo < 2:
                 break
-            if j + largo <= len(filas) and filas[i:j] == filas[j : j + largo]:
+            if tramo(i, j) == tramo(j, j + largo) and filas[i:j] == filas[j : j + largo]:
                 return movimientos[i:j], movimientos[j : j + largo]
     return None

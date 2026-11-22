@@ -24,6 +24,7 @@ BANCO: dict[str, Any] = {
     "columnas": {"fecha": "Fecha", "descripcion": "Detalle", "monto": "Monto"},
     "formato_fecha": "%d/%m/%Y",
     "decimal": "punto",
+    "cuentas": ["ahorros"],
 }
 
 
@@ -43,7 +44,7 @@ def _cargar(tmp_path: Path, contenido: dict[str, Any]) -> Any:
 def test_el_yaml_del_repo_carga_y_trae_los_bancos_sinteticos() -> None:
     bancos = cargar_bancos()
     assert {"banco_sintetico", "banco_sintetico_coma"} <= bancos.bancos.keys()
-    assert bancos.tope_bytes > 0
+    assert bancos.topes.bytes > 0
 
 
 def test_cada_banco_conoce_su_clave() -> None:
@@ -65,7 +66,15 @@ def test_falla_si_el_yaml_no_existe(tmp_path: Path) -> None:
 
 def test_rechaza_una_clave_de_banco_con_mayusculas_o_espacios(tmp_path: Path) -> None:
     with pytest.raises(ValidationError, match="Banco Raro"):
-        _cargar(tmp_path, {"tope_bytes": 1000, "bancos": {"Banco Raro": BANCO}})
+        _cargar(
+            tmp_path,
+            {
+                "tope_bytes": 1000,
+                "tope_filas": 10,
+                "tope_monto": 10,
+                "bancos": {"Banco Raro": BANCO},
+            },
+        )
 
 
 def test_rechaza_un_campo_que_no_existe() -> None:
@@ -173,11 +182,29 @@ def test_las_frases_son_palabras_completas() -> None:
 
 
 def test_las_palabras_genericas_se_comparan_sin_tildes(tmp_path: Path) -> None:
-    bancos = _cargar(tmp_path, {"tope_bytes": 10, "bancos": {}, "palabras_genericas": ["Débito"]})
+    bancos = _cargar(
+        tmp_path,
+        {
+            "tope_bytes": 10,
+            "tope_filas": 10,
+            "tope_monto": 10,
+            "bancos": {},
+            "palabras_genericas": ["Débito"],
+        },
+    )
     assert bancos.genericas == {"debito"}
 
 
 @pytest.mark.parametrize("palabra", ["pago tarjeta", "sa", "visa2", ""])
 def test_una_palabra_generica_que_nunca_coincidiria_no_carga(tmp_path: Path, palabra: str) -> None:
     with pytest.raises(ValidationError, match="no sirve como palabra genérica"):
-        _cargar(tmp_path, {"tope_bytes": 10, "bancos": {}, "palabras_genericas": [palabra]})
+        _cargar(
+            tmp_path,
+            {
+                "tope_bytes": 10,
+                "tope_filas": 10,
+                "tope_monto": 10,
+                "bancos": {},
+                "palabras_genericas": [palabra],
+            },
+        )
