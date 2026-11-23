@@ -18,6 +18,7 @@ El repo cuenta una sola historia de producto: **captura verificada → conciliac
 - **G2, reglas de cruce (rama `fase-g2-reglas`, 14-nov, sin mergear):** `conciliacion/reglas.py` con tres reglas en orden y con nombre, `--conciliar <AAAA-MM>` y `scripts/medir_cruce.py`. Congeladas en `c7694f0` y medidas una vez: 20 pares, 20 correctos (precisión 100 %), recall 20 de 24 (83 %); la regla 3 no hizo pares y su precisión no quedó medida. Detalle y los 4 pares que faltaron en `docs/conciliacion.md`. La rama trae también los pares verdaderos de la PR #24, que se mergeó a `fase-g1-ingesta` y no llegó a `main`.
 - **Revisión de las reglas de cruce (rama `fix-reglas-cruce`, 14-nov):** cuatro fallos reproducidos (B5 a B8). Los casos entraron al set (junio y julio; 69 filas) y el criterio se congeló en `99a42c4`, antes de implementar. Ahora el cruce mira todos los movimientos libres y el mes solo filtra lo que se muestra; `monto_y_fecha` y `monto_3_dias` se asignan juntas por menor distancia total; dos cargos iguales de comercios distintos no son gemelos; `monto_y_descripcion` queda apagada por defecto (`regla_descripcion` en `config/bancos.yaml`). Medidas una vez en `e703909`: 27 pares, 27 correctos, recall 27 de 29 (93 %), mismos pares en cualquier orden de meses. Las reglas de la PR #25 sobre el mismo set: 28 pares, 8 equivocados. **El set es de desarrollo; no hay uno sin ver.** Detalle en `docs/conciliacion.md` y `docs/decisiones.md`.
 - **Carreras y huecos de la auditoría (rama `fix-carreras-auditoria`, 15-nov):** las escrituras que leen antes de escribir (`--conciliar`, anular, editar, anular estado, reparar) abren con `BEGIN IMMEDIATE`; la auditoría usa LEFT JOIN y revisa monto, débito y ventana de fecha; editar un gasto sin tocar monto ni fecha hereda el par; `RepositorioConciliaciones.anular` y `--anular-par`. Detalle en `docs/conciliacion.md` y `docs/decisiones.md`.
+- **Ingesta endurecida (rama `fix-ingesta-endurecida`, 22-nov):** las cuentas salen de `cuentas` en `config/bancos.yaml` y una desconocida se rechaza; `guardar` vuelve a verificar con `BEGIN IMMEDIATE` (test de carrera); una tarjeta con más créditos que débitos se rechaza; la continuidad rota rechaza y un hueco avisa; `tope_filas` y `tope_monto` en el yaml; descripciones con caracteres de control se rechazan; el mensaje de encabezado no copia celdas; el bloque duplicado con 8.000 filas pasó de 16,8 s a menos de 1 s; `--importar-estado` muestra el resumen y solo guarda con `--confirmar`. El par que suma cero queda como límite. Detalle en `docs/conciliacion.md`. El titular de la cuenta va en otra PR.
 
 ### Qué sigue
 
@@ -37,7 +38,7 @@ El repo cuenta una sola historia de producto: **captura verificada → conciliac
 - **Cruce: ¿las reglas recuerdan un par anulado a mano?** Hoy no: tras `--anular-par`, el siguiente `--conciliar` puede volver a unir el mismo movimiento con el mismo gasto. Recordarlo pide cambiar `reglas.py`.
 - **Cruce: `CLAUDE.md` todavía describe las tres reglas "en orden".** Es un principio no negociable y no se tocó: dice "monto exacto y misma fecha, monto exacto a ±3 días, y monto exacto con descripción parecida", y hoy las dos primeras se deciden juntas y la tercera está apagada.
 - **G0 (fuentes de la conciliación):** Pichincha exporta solo PDF con texto; Diners, PDF y quizás CSV (lo verifica Demian). Faltan desde qué mes hay estados, el porcentaje en efectivo y dónde corre Power BI.
-- **G1b (PDF de Pichincha):** diseño aprobado el 14-nov y fixtures sintéticos hechos. El parser espera a que termine el cambio de la ingesta (anulación en cascada, identidad de cuenta, solape en transacción).
+- **G1b (PDF de Pichincha):** diseño aprobado el 14-nov y fixtures sintéticos hechos. El parser espera a que termine el cambio de la ingesta: la anulación en cascada y el solape en transacción ya están; falta el titular de la cuenta.
 - **Decisión de rumbo del 10-nov:** el repo se renombra, entra la conciliación de estados de cuenta (Fase G) y la Fase F sale de este repo.
 
 ### Operación
@@ -125,7 +126,7 @@ Limitación conocida (decidida el 12-nov): la conciliación es **uno a uno y sol
   - `conciliaciones`: qué regla unió cada par; un movimiento y un gasto solo pueden estar en un par vigente.
   - `--migrar` crea las tres tablas sin tocar las demás; el arranque falla si les falta una columna o un índice único. `PRAGMA foreign_keys=ON` en cada conexión.
 - [x] Reglas por banco en `config/bancos.yaml` que asignan `movimientos.tipo` al importar, sin LLM.
-- [x] `conciliacion/ingesta.py` (CSV → contrato Pydantic) y `verificacion.py` (invariante de saldo, saldo corrido, fechas en el periodo, duplicados, continuidad como aviso).
+- [x] `conciliacion/ingesta.py` (CSV → contrato Pydantic) y `verificacion.py` (invariante de saldo, saldo corrido, fechas en el periodo, duplicados, continuidad: rechazo si no encadena, aviso si hay un hueco).
 - [x] `config/bancos.yaml`: un banco nuevo es una entrada en el yaml, no código. Hoy solo trae dos bancos inventados.
 - [x] CLI: `--importar-estado`.
 - [x] `scripts/estado_sintetico.py`: estados sintéticos que cuadran y variantes que no, y una base sintética del bot (`--base`).

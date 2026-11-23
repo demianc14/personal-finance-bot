@@ -1,4 +1,10 @@
-"""Importar un estado de cuenta: leer, verificar y guardar. Entra completo o no entra."""
+"""Importar un estado de cuenta: leer, verificar, mostrar y guardar. Entra completo o no entra.
+
+Son dos pasos para que el resumen se vea antes de guardar: `revisar_estado` lee y
+verifica sin escribir nada, y `guardar_revision` vuelve a verificar con el candado
+de escritura tomado y guarda. La segunda verificación no es de más: entre los dos
+pasos otro proceso pudo importar un periodo que se cruza.
+"""
 
 from datetime import date
 from pathlib import Path
@@ -7,16 +13,46 @@ from typing import get_args
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.exc import IntegrityError
 
-from family_expense_bot.conciliacion.bancos import Banco
+from family_expense_bot.conciliacion.bancos import Banco, Topes
 from family_expense_bot.conciliacion.contrato import (
+    EstadoLeido,
     EstadoRechazado,
     EstadoVigente,
     Problema,
     TipoMovimiento,
 )
 from family_expense_bot.conciliacion.ingesta import leer_estado
-from family_expense_bot.conciliacion.verificacion import verificar
+from family_expense_bot.conciliacion.verificacion import Veredicto, verificar
 from family_expense_bot.storage.repository import RepositorioEstados
+
+
+class Revision(BaseModel):
+    """Un estado leído que cuadra, todavía sin guardar: lo que se muestra antes de confirmar."""
+
+    model_config = ConfigDict(frozen=True)
+
+    estado: EstadoLeido
+    avisos: tuple[str, ...]
+
+    @property
+    def movimientos(self) -> int:
+        return len(self.estado.movimientos)
+
+    @property
+    def por_tipo(self) -> dict[str, int]:
+        """Cuántos movimientos de cada tipo, en el orden de los tipos y sin los que no hay."""
+        tipos = [m.tipo for m in self.estado.movimientos]
+        return {t: tipos.count(t) for t in get_args(TipoMovimiento) if t in tipos}
+
+    @property
+    def creditos(self) -> int:
+        """Cuántos movimientos entran."""
+        return sum(1 for m in self.estado.movimientos if m.monto_centavos > 0)
+
+    @property
+    def debitos(self) -> int:
+        """Cuántos movimientos salen."""
+        return self.movimientos - self.creditos
 
 
 class Importacion(BaseModel):
@@ -29,7 +65,7 @@ class Importacion(BaseModel):
     avisos: tuple[str, ...]
 
 
-def importar_estado(
+def revisar_estado(
     ruta: Path,
     banco: Banco,
     repositorio: RepositorioEstados,
@@ -37,28 +73,38 @@ def importar_estado(
     cuenta: str,
     desde: date,
     hasta: date,
-    tope_bytes: int,
+    topes: Topes,
     saldo_anterior_centavos: int,
     saldo_final_centavos: int,
-) -> Importacion:
-    """Guarda el estado solo si se leyó entero y cuadra; si no, lanza `EstadoRechazado`."""
+) -> Revision:
+    """Lee y verifica sin guardar nada. Si no cuadra, lanza `EstadoRechazado`."""
     estado = leer_estado(
         ruta,
         banco,
         cuenta=cuenta,
         desde=desde,
         hasta=hasta,
-        tope_bytes=tope_bytes,
+        topes=topes,
         saldo_anterior_centavos=saldo_anterior_centavos,
         saldo_final_centavos=saldo_final_centavos,
     )
-    veredicto = verificar(estado, repositorio.vigentes())
-    if not veredicto.cuadra:
-        raise EstadoRechazado(veredicto.problemas)
+    veredicto = _exigir(verificar(estado, repositorio.vigentes()))
+    return Revision(estado=estado, avisos=veredicto.avisos)
+
+
+def guardar_revision(revision: Revision, repositorio: RepositorioEstados) -> Importacion:
+    """Verifica de nuevo con el candado tomado y guarda; si ya no cuadra, `EstadoRechazado`."""
+    estado = revision.estado
+    avisos: tuple[str, ...] = ()
+
+    def revisar(vigentes: list[EstadoVigente]) -> None:
+        nonlocal avisos
+        avisos = _exigir(verificar(estado, vigentes)).avisos
+
     try:
-        guardado = repositorio.guardar(estado)
+        guardado = repositorio.guardar(estado, revisar=revisar)
     except IntegrityError:
-        # Otra importación del mismo archivo ganó la carrera: la frena el índice único del hash.
+        # Última defensa: el índice único del hash, por si la revisión no lo vio.
         raise EstadoRechazado(
             [
                 Problema(
@@ -67,10 +113,42 @@ def importar_estado(
                 )
             ]
         ) from None
-    tipos = [m.tipo for m in estado.movimientos]
     return Importacion(
         estado=guardado,
-        movimientos=len(tipos),
-        por_tipo={t: tipos.count(t) for t in get_args(TipoMovimiento) if t in tipos},
-        avisos=veredicto.avisos,
+        movimientos=revision.movimientos,
+        por_tipo=revision.por_tipo,
+        avisos=avisos,
     )
+
+
+def importar_estado(
+    ruta: Path,
+    banco: Banco,
+    repositorio: RepositorioEstados,
+    *,
+    cuenta: str,
+    desde: date,
+    hasta: date,
+    topes: Topes,
+    saldo_anterior_centavos: int,
+    saldo_final_centavos: int,
+) -> Importacion:
+    """Revisar y guardar de una vez, sin mostrar nada: para scripts y tests con datos sintéticos."""
+    revision = revisar_estado(
+        ruta,
+        banco,
+        repositorio,
+        cuenta=cuenta,
+        desde=desde,
+        hasta=hasta,
+        topes=topes,
+        saldo_anterior_centavos=saldo_anterior_centavos,
+        saldo_final_centavos=saldo_final_centavos,
+    )
+    return guardar_revision(revision, repositorio)
+
+
+def _exigir(veredicto: Veredicto) -> Veredicto:
+    if not veredicto.cuadra:
+        raise EstadoRechazado(veredicto.problemas)
+    return veredicto

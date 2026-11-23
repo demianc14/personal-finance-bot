@@ -82,7 +82,7 @@ def _importar(
         cuenta=cuenta,
         desde=MARZO[0],
         hasta=MARZO[1],
-        tope_bytes=BANCOS.tope_bytes,
+        topes=BANCOS.topes,
         saldo_anterior_centavos=ANTERIOR,
         saldo_final_centavos=ANTERIOR + sum(centavos for _, _, centavos in filas),
     )

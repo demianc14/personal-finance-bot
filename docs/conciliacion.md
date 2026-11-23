@@ -21,7 +21,7 @@ Pichincha no exporta CSV ni Excel, así que entra la subfase del PDF (G1b en [`R
 
 ## PDF de Pichincha (G1b): fixtures, todavía sin parser
 
-`scripts/estado_sintetico.py` genera 11 PDF sintéticos en `tests/fixtures/estados/`, con la forma del export de Pichincha. **Todavía no hay parser que los lea**: espera a que cambie la ingesta (anulación en cascada, identidad de cuenta, solape en transacción) para no chocar con ese trabajo.
+`scripts/estado_sintetico.py` genera 11 PDF sintéticos en `tests/fixtures/estados/`, con la forma del export de Pichincha. **Todavía no hay parser que los lea**: espera al último cambio de la ingesta (el titular de la cuenta) para no chocar con ese trabajo.
 
 **Qué prueban y qué no.** Cuando exista el parser, estos fixtures lo prueban **contra nuestro generador, no contra el banco**. Que el generador se parezca al export real se comprobó **una sola vez, en local**, comparando la forma de un estado real con la del sintético (sin copiar su contenido; abajo están las diferencias). Ese contraste no está en los tests ni en el repo. Si el banco cambia el formato, los tests siguen pasando y solo una corrida nueva contra un estado real lo nota.
 
@@ -73,13 +73,14 @@ La columna "Debería" está **anotada a mano, no medida**: sale de `CASOS_PDF` y
 
 ```bash
 family-expense-bot --importar-estado marzo.csv --banco banco_sintetico --cuenta ahorros --desde 2026-03-01 --hasta 2026-03-31 --saldo-anterior 1000.00 --saldo-final 1714.73
+family-expense-bot --importar-estado marzo.csv --banco banco_sintetico --cuenta ahorros --desde 2026-03-01 --hasta 2026-03-31 --saldo-anterior 1000.00 --saldo-final 1714.73 --confirmar
 ```
 
 - `--banco` es la clave del banco en `config/bancos.yaml`.
-- `--cuenta` es una etiqueta ("ahorros", "visa"). Se rechaza cualquier cosa con cuatro dígitos seguidos: el número de cuenta nunca se guarda.
+- `--cuenta` es una etiqueta ("ahorros", "visa") de la lista `cuentas` de ese banco en el yaml. Una que no esté se rechaza: un error de tipeo no abre una cuenta nueva. Tampoco entra nada con cuatro dígitos seguidos, ni en la CLI ni en el yaml: el número de cuenta nunca se guarda.
 - `--saldo-anterior` y `--saldo-final` van como los muestra el banco, con punto decimal. Son **obligatorios siempre**, aunque el archivo traiga columna de saldo (ver [decisiones](#decisiones)).
 
-Si entra, dice cuántos movimientos guardó y de qué tipo. Si no, lista **todos** los problemas, termina con código 1 y no guarda nada.
+El primer comando no guarda nada: lee, verifica y muestra el resumen (periodo, saldos, cuántos movimientos de cada tipo, cuánto entra y cuánto sale, y los avisos). Si el resumen está bien, el segundo, con `--confirmar`, muestra el mismo resumen, verifica otra vez con el candado de escritura tomado y guarda. Si no cuadra, lista **todos** los problemas, termina con código 1 y no guarda nada.
 
 Para probar sin tocar la base real:
 
@@ -100,12 +101,16 @@ Es una entrada en [`config/bancos.yaml`](../config/bancos.yaml), no código: nom
 **Al leer** (`conciliacion/ingesta.py`). Nada se adivina; una sola fila mala rechaza el archivo:
 
 - El archivo no pasa del tope (`tope_bytes`, 1 MiB). Se mira el tamaño antes de abrirlo.
+- No trae más movimientos que `tope_filas` (2.000; uno mensual trae decenas).
+- La cuenta está en la lista `cuentas` del banco.
 - Está en la codificación del banco. UTF-8 entra con o sin BOM.
-- El encabezado trae todas las columnas del yaml, sin repetir. Las columnas de más se ignoran.
+- El encabezado trae todas las columnas del yaml, sin repetir. Las columnas de más se ignoran. Si falta una, el mensaje nombra las del yaml y dice cuántas columnas trae el archivo, sin copiar sus celdas: lo que nadie revisó no se repite en la terminal.
 - Cada fila tiene las mismas columnas que el encabezado, con fecha, descripción, monto y saldo (si el banco lo trae).
 - La fecha existe y está en el formato del banco.
-- El monto son dígitos y hasta dos decimales con el separador del banco. Sin separador de miles, sin símbolo de moneda, sin paréntesis, y distinto de cero.
+- El monto son dígitos y hasta dos decimales con el separador del banco. Sin separador de miles, sin símbolo de moneda, sin paréntesis, distinto de cero y no más grande que `tope_monto` (100000.00 por movimiento). Uno más grande es antes un signo o un separador mal leído que un gasto real; si es real, se sube el tope en el yaml.
 - La descripción cabe en 500 caracteres. Si no, se rechaza: cortarla sería adivinar.
+- La descripción no trae caracteres de control ni de formato (categorías Unicode `Cc` y `Cf`: NUL, escape, tabulador, el que invierte el texto, el espacio de ancho cero). Ningún banco los escribe y cambian lo que se ve en una terminal o una planilla.
+- **En una tarjeta** (`signo: positivo_sale`), no hay más créditos que débitos. Con el signo invertido en el yaml el saldo cuadra igual, porque los saldos declarados se invierten con él; lo delata que casi todo pasa a ser plata que entra.
 
 **Después de leer** (`conciliacion/verificacion.py`), todo en centavos enteros:
 
@@ -114,14 +119,15 @@ Es una entrada en [`config/bancos.yaml`](../config/bancos.yaml), no código: nom
 3. **Fechas:** cada movimiento cae dentro del periodo.
 4. **Saldo corrido** (solo con columna de saldo): cada fila encadena con la anterior, y la última da el saldo final.
 5. **Invariante:** saldo anterior + créditos − débitos = saldo final.
-6. **Bloque duplicado:** dos o más filas seguidas que se repiten justo después. Si el estado no cuadra, el mensaje dice qué líneas son y si suman la diferencia.
+6. **Bloque duplicado:** dos o más filas seguidas que se repiten justo después. Si el estado no cuadra, el mensaje dice qué líneas son y si suman la diferencia. Solo se prueban las posiciones donde se repite el mismo par de filas seguidas, y los tramos se comparan con un hash de prefijos (y después de verdad): 8.000 filas tardan menos de un segundo (`tests/test_ingesta_endurecida.py`).
+7. **Continuidad:** se compara con el estado vigente más cercano de la misma cuenta, de cada lado. Si es contiguo (termina el día anterior o empieza el día siguiente) y el saldo no encadena, se rechaza.
 
 **Avisos** (no rechazan; se muestran al importar y no se guardan):
 
-- **Continuidad:** si hay un estado vigente de la misma cuenta que termina el día anterior (o empieza el día siguiente) y su saldo no empata con el de este.
+- **Hueco entre estados:** si entre este y el vecino más cercano faltan días, la continuidad no se puede verificar y se avisa qué días faltan.
 - **Bloque repetido en un estado que cuadra:** el saldo confirma que los movimientos son reales, pero conviene mirarlo.
 
-**Al guardar**, el estado y sus movimientos van en una sola transacción. El índice único del hash es la última defensa si dos importaciones corren a la vez.
+**Al guardar**, todo va en una sola transacción que toma el candado de escritura al empezar (`BEGIN IMMEDIATE`, como en la [integridad](#integridad-de-las-conciliaciones)): lee los estados vigentes, vuelve a verificar y recién ahí escribe el estado y sus movimientos. Si otro proceso importó un periodo que se cruza entre el resumen y el guardado, esta segunda verificación lo ve y no se guarda nada. El índice único del hash queda como última defensa.
 
 ## Cruce con los gastos
 
@@ -283,7 +289,8 @@ Igual que la reparación: sin `--confirmar` muestra qué anularía y no cambia n
 - **Línea totalmente vacía se salta; fila a medio llenar se rechaza.** La numeración de líneas se conserva, así que "línea 8" es la línea 8 del archivo en un editor. Una fila con solo separadores (`,,,`) cuenta como vacía: así exporta Excel una fila en blanco.
 - **Las descripciones se guardan literales, aunque empiecen con `=`, `+`, `-` o `@`.** La base guarda lo que dice el banco: cambiar el texto al importar rompería la comparación de descripciones del cruce y lo que se guarda dejaría de ser lo que trae el archivo. El riesgo (que Excel o Power BI lo ejecuten como fórmula) existe solo cuando el texto sale a un CSV, así que se neutraliza **al exportar**, tanto en el `--exportar` de gastos que ya existe como en `--exportar-bi`. Va en una PR aparte (decidido el 2026-11-14, anotado en el roadmap); hasta que entre, `--exportar` no neutraliza.
 - **Dos cargos idénticos el mismo día son dos movimientos.** Una sola fila repetida nunca se toma como duplicado; un bloque de dos o más, sí se señala.
-- **La continuidad avisa, no rechaza.** Un estado anterior mal importado no debe bloquear al siguiente.
+- **La continuidad rechaza; un hueco avisa** (decidido el 2026-11-22; antes solo avisaba). Si dos estados contiguos de la misma cuenta no encadenan, falta un movimiento o un saldo está mal, y eso no se importa a medias. Si entre los dos faltan días no hay con qué comparar: se avisa, para no obligar a importar en orden. Si el estado anterior está mal, se anula y se vuelve a importar.
+- **El resumen se ve antes de guardar** (decidido el 2026-11-22). Sin `--confirmar` no se escribe nada, como `--reparar-integridad` y `--anular-par`.
 - **Los saldos declarados son obligatorios siempre** (decidido el 2026-11-14). Los escribe quien importa, mirando el estado; nunca se deducen del archivo. Si el saldo anterior saliera de la primera fila, esa fila no se verificaría contra nada y un archivo cortado al principio o al final cuadraría. Con los dos declarados, la primera fila tiene que encadenar con el saldo anterior y la última tiene que dar el saldo final (caso `primera_fila_corrida`).
 - **Los avisos se muestran y no se guardan** (decidido el 2026-11-14). Guardarlos pediría una columna nueva en el esquema.
 - **Los saldos declarados van como los muestra el banco.** En una tarjeta (`signo: positivo_sale`) lo que se debe va en positivo; adentro todo queda con signo negativo si sale plata.
@@ -302,6 +309,9 @@ Igual que la reparación: sin `--confirmar` muestra qué anularía y no cambia n
 - **Sin columna de saldo, solo se verifica el total.** Una fila perdida se nota porque el total no cuadra, pero no se sabe cuál fue. Dos errores que se compensan (+1 y −1 centavo) pasan sin que nada los delate: es el caso `errores_compensados_sin_saldo` de la tabla. Con columna de saldo, los dos se detectan en la línea exacta.
 - **Los avisos no quedan en la base.** Salen una vez, al importar. Después solo se pueden reconstruir comparando los saldos de dos estados seguidos.
 - **Una fila repetida suelta no se detecta por sí sola.** Si no es real, la delata el saldo.
+- **Un cargo y su reverso inventados no se detectan.** Un par que suma cero (−500.00 y +500.00) no cambia ningún saldo: el estado cuadra, el saldo corrido encadena y la continuidad también (`test_un_par_que_suma_cero_no_se_detecta`). Solo lo vería alguien comparando con el estado del banco.
+- **Con un hueco entre estados no se verifica la continuidad.** Se avisa, pero el estado entra.
+- **La regla de la tarjeta cuenta movimientos, no montos.** Una tarjeta con más pagos y devoluciones que consumos en un mes se rechaza aunque esté bien; si pasa con el banco real, la regla se revisa.
 - **El archivo va del movimiento más viejo al más nuevo.** Un banco que exporte al revés rompe el saldo corrido; haría falta una opción en el yaml. Se queda así hasta ver el banco real (G0).
 - **No hay filas de totales al final.** Una fila "Total" se rechaza como fila a medio llenar. Se queda así hasta ver el banco real (G0).
 - **Solo CSV.** Pichincha exporta PDF (G0): su lectura es la subfase G1b, todavía sin código. Excel depende de lo que responda Diners.
@@ -330,7 +340,7 @@ python scripts/estado_sintetico.py --tabla
 | `reexportado` | El mismo mes exportado de nuevo (otros bytes: fin de línea de Windows) | Rechazado | El periodo 2026-03-01 a 2026-03-31 se cruza con el del estado #1 (2026-03-01 a 2026-03-31) de la misma cuenta. |
 | `separador_de_miles` | Un monto con separador de miles ("1,200.00") | Rechazado | Línea 3: el monto '1,200.00' no es válido: van solo dígitos y hasta dos decimales con punto, sin separador de miles. |
 | `tres_decimales` | Un monto con tres decimales ("-85.400") | Rechazado | Línea 2: el monto '-85.400' no es válido: van solo dígitos y hasta dos decimales con punto, sin separador de miles. |
-| `encabezado_de_otro_banco` | Encabezado con las columnas de otro banco | Rechazado | Línea 1: al encabezado le faltan las columnas 'Fecha', 'Descripción', 'Monto' y 'Saldo'; trae 'Date', 'Description', 'Amount' y 'Balance'. ¿Es un estado de Banco Sintético? |
+| `encabezado_de_otro_banco` | Encabezado con las columnas de otro banco | Rechazado | Línea 1: al encabezado le faltan las columnas 'Fecha', 'Descripción', 'Monto' y 'Saldo'; trae 4 columnas. ¿Es un estado de Banco Sintético? |
 | `fecha_imposible` | Una fecha que no existe (31/02/2026) | Rechazado | Línea 6: la fecha '31/02/2026' no tiene el formato %d/%m/%Y. |
 | `fecha_mes_dia` | Fechas en mes/día/año en un banco de día/mes/año | Rechazado | Línea 11: la fecha '03/15/2026' no tiene el formato %d/%m/%Y.<br>Línea 12: la fecha '03/15/2026' no tiene el formato %d/%m/%Y.<br>Línea 13: la fecha '03/18/2026' no tiene el formato %d/%m/%Y.<br>(y 5 más) |
 | `errores_compensados` | Dos montos corridos +1 y -1 centavo; el total cuadra | Rechazado | Línea 2: el saldo no encadena: 1000.00 - 85.39 = 914.61, pero la fila dice 914.60.<br>Línea 5: el saldo no encadena: 2092.60 - 10.00 = 2082.60, pero la fila dice 2082.61. |
@@ -346,7 +356,7 @@ python scripts/estado_sintetico.py --tabla
 | `signo_invertido` | Débitos y créditos cambiados de columna | Rechazado | El estado no cuadra: saldo anterior 1000.00 + créditos 485.39 - débitos 1200.12 = 285.27, pero el saldo final es 1714.73 (diferencia 1429.46). |
 | `monto_cero` | Un movimiento en cero | Rechazado | Línea 4: el monto es cero. |
 | `sin_movimientos` | Sin movimientos, pero con saldo final distinto del anterior | Rechazado | El estado no cuadra: saldo anterior 1000.00 + créditos 0.00 - débitos 0.00 = 1000.00, pero el saldo final es 1005.00 (diferencia 5.00). |
-| `continuidad` | Abril empieza con un saldo distinto del que cerró marzo | Entra con aviso | El estado #1 (2026-03-01 a 2026-03-31) cerró con 1714.73 y este empieza con 1713.73: hay -1.00 de diferencia entre los dos. |
+| `continuidad` | Abril empieza con un saldo distinto del que cerró marzo | Rechazado | El estado #1 (2026-03-01 a 2026-03-31) cerró con 1714.73 y este empieza con 1713.73: hay -1.00 de diferencia entre los dos. |
 <!-- tabla-casos:fin -->
 
 Los mensajes de los casos que no están en la tabla (codificación, CSV mal formado, columna repetida, descripción larga, cuenta que parece un número) están en `tests/test_ingesta.py`, también completos.

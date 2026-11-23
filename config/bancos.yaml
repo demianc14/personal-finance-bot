@@ -16,6 +16,8 @@
 #   formato_fecha   formato de strptime, con %d, %m y %Y.
 #   decimal         punto o coma. Nunca se adivina, y no hay separador de miles.
 #   signo           negativo_sale (por defecto) o positivo_sale (una tarjeta).
+#   cuentas         etiquetas de cuenta que se aceptan ("ahorros", "visa"):
+#                   minúsculas y nunca el número. Una que no esté se rechaza.
 #   tipos           reglas en orden que asignan movimientos.tipo; gana la primera.
 #                   `contiene` son frases completas, sin distinguir tildes ni
 #                   mayúsculas; `signo` (sale o entra) es opcional. Si ninguna
@@ -37,6 +39,8 @@
 # scripts/estado_sintetico.py. El banco real entra cuando Demian responda G0.
 
 tope_bytes: 1048576 # 1 MiB; un estado mensual en CSV pesa unos pocos KB
+tope_filas: 2000 # movimientos por estado; uno mensual trae decenas
+tope_monto: 100000 # dólares por movimiento; más que esto es un signo o un separador mal leído
 
 regla_descripcion: false
 
@@ -82,6 +86,7 @@ bancos:
       saldo: Saldo
     formato_fecha: "%d/%m/%Y"
     decimal: punto
+    cuentas: [ahorros, visa]
     tipos:
       - tipo: comision
         contiene: [comision, mantenimiento de cuenta, costo de chequera]
@@ -105,6 +110,7 @@ bancos:
       credito: Crédito
     formato_fecha: "%Y-%m-%d"
     decimal: coma
+    cuentas: [ahorros]
     tipos:
       - tipo: comision
         contiene: [comision, mantenimiento de cuenta]

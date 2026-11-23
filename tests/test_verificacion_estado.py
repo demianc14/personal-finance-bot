@@ -325,36 +325,74 @@ def test_el_periodo_de_otra_cuenta_o_de_otro_banco_no_estorba() -> None:
     assert _problemas(_estado(MONTOS), *otros) == []
 
 
-# --- Continuidad entre estados: aviso, no rechazo ---
+# --- Continuidad entre estados: un saldo que no encadena rechaza ---
 
 
-def test_si_el_estado_anterior_cerro_con_otro_saldo_avisa() -> None:
-    veredicto = verificar(_estado(MONTOS), [_vigente(saldo_final_centavos=99_950)])
-    assert veredicto.problemas == ()
-    assert veredicto.avisos == (
-        "El estado #7 (2026-02-01 a 2026-02-28) cerró con 999.50 y este empieza con 1000.00: "
-        "hay 0.50 de diferencia entre los dos.",
-    )
+def test_si_el_estado_anterior_cerro_con_otro_saldo_se_rechaza() -> None:
+    assert _problemas(_estado(MONTOS), _vigente(saldo_final_centavos=99_950)) == [
+        (
+            "continuidad",
+            "El estado #7 (2026-02-01 a 2026-02-28) cerró con 999.50 y este empieza con "
+            "1000.00: hay 0.50 de diferencia entre los dos.",
+        )
+    ]
 
 
-def test_si_el_estado_siguiente_empieza_con_otro_saldo_avisa() -> None:
+def test_si_el_estado_siguiente_empieza_con_otro_saldo_se_rechaza() -> None:
     siguiente = _vigente(
         periodo_desde=date(2026, 4, 1), periodo_hasta=date(2026, 4, 30), saldo_anterior_centavos=1
     )
-    veredicto = verificar(_estado(MONTOS), [siguiente])
-    assert veredicto.avisos == (
-        "Este estado cierra con 1204.05 y el #7 (2026-04-01 a 2026-04-30) empieza con 0.01: "
-        "hay -1204.04 de diferencia entre los dos.",
-    )
+    assert _problemas(_estado(MONTOS), siguiente) == [
+        (
+            "continuidad",
+            "Este estado cierra con 1204.05 y el #7 (2026-04-01 a 2026-04-30) empieza con 0.01: "
+            "hay -1204.04 de diferencia entre los dos.",
+        )
+    ]
 
 
-def test_si_los_saldos_empatan_no_avisa() -> None:
-    assert verificar(_estado(MONTOS), [_vigente()]).avisos == ()
+def test_si_los_saldos_empatan_no_rechaza_ni_avisa() -> None:
+    veredicto = verificar(_estado(MONTOS), [_vigente()])
+    assert (veredicto.problemas, veredicto.avisos) == ((), ())
 
 
-def test_la_continuidad_solo_mira_el_estado_que_termina_justo_antes() -> None:
+def test_con_un_hueco_antes_avisa_que_no_pudo_verificar_la_continuidad() -> None:
     lejos = _vigente(
         periodo_desde=date(2026, 1, 1), periodo_hasta=date(2026, 1, 31), saldo_final_centavos=5
     )
     otra_cuenta = _vigente(cuenta="visa", saldo_final_centavos=5)
-    assert verificar(_estado(MONTOS), [lejos, otra_cuenta]).avisos == ()
+    veredicto = verificar(_estado(MONTOS), [lejos, otra_cuenta])
+    assert veredicto.problemas == ()
+    assert veredicto.avisos == (
+        "Entre el estado #7 (2026-01-01 a 2026-01-31) y este faltan los días 2026-02-01 a "
+        "2026-02-28: la continuidad del saldo no se pudo verificar.",
+    )
+
+
+def test_con_un_hueco_despues_tambien_avisa() -> None:
+    lejos = _vigente(
+        periodo_desde=date(2026, 5, 1), periodo_hasta=date(2026, 5, 31), saldo_anterior_centavos=5
+    )
+    assert verificar(_estado(MONTOS), [lejos]).avisos == (
+        "Entre este estado y el #7 (2026-05-01 a 2026-05-31) faltan los días 2026-04-01 a "
+        "2026-04-30: la continuidad del saldo no se pudo verificar.",
+    )
+
+
+def test_solo_compara_con_el_vecino_mas_cercano() -> None:
+    """Enero cerró con otro saldo, pero febrero está en medio y encadena: no hay nada que decir."""
+    enero = _vigente(
+        id=6,
+        periodo_desde=date(2026, 1, 1),
+        periodo_hasta=date(2026, 1, 31),
+        saldo_final_centavos=5,
+    )
+    veredicto = verificar(_estado(MONTOS), [enero, _vigente()])
+    assert (veredicto.problemas, veredicto.avisos) == ((), ())
+
+
+def test_un_par_que_suma_cero_no_se_detecta() -> None:
+    """Límite documentado (A3): un cargo y su reverso inventados no cambian ningún saldo."""
+    con_par = _estado([*MONTOS, -50_000, 50_000])
+    veredicto = verificar(con_par, [_vigente()])
+    assert (veredicto.problemas, veredicto.avisos) == ((), ())

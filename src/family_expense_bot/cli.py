@@ -7,6 +7,7 @@ import functools
 import logging
 from datetime import date
 from pathlib import Path
+from typing import NoReturn
 
 import uvicorn
 from sqlalchemy.exc import IntegrityError, OperationalError
@@ -16,7 +17,7 @@ from family_expense_bot.bot.envio import enviar
 from family_expense_bot.bot.handlers import Servicios, build_application, obtener_identidad
 from family_expense_bot.conciliacion.bancos import cargar_bancos
 from family_expense_bot.conciliacion.contrato import EstadoRechazado, plata
-from family_expense_bot.conciliacion.importar import importar_estado
+from family_expense_bot.conciliacion.importar import guardar_revision, revisar_estado
 from family_expense_bot.conciliacion.ingesta import centavos_declarados
 from family_expense_bot.conciliacion.integridad import (
     IntegridadRota,
@@ -179,7 +180,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--confirmar",
         action="store_true",
-        help="Con --reparar-integridad o --anular-par: anula de verdad, en una transacción.",
+        help="Con --importar-estado: guarda el estado después de mostrar el resumen. Con "
+        "--reparar-integridad o --anular-par: anula de verdad, en una transacción.",
     )
     parser.add_argument(
         "--anular-par",
@@ -199,8 +201,12 @@ def _parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = _parser()
     args = parser.parse_args()
-    if args.confirmar and not (args.reparar_integridad or args.anular_par is not None):
-        parser.error("--confirmar solo va con --reparar-integridad o --anular-par")
+    if args.confirmar and not (
+        args.importar_estado or args.reparar_integridad or args.anular_par is not None
+    ):
+        parser.error(
+            "--confirmar solo va con --importar-estado, --reparar-integridad o --anular-par"
+        )
     if args.motivo is not None and args.anular_par is None:
         parser.error("--motivo solo va con --anular-par")
     if args.anular_par is not None and not (args.motivo or "").strip():
@@ -338,32 +344,54 @@ def _importar_estado(
     except EsquemaDesactualizado as e:
         raise SystemExit(f"No importo: {e}") from e
     try:
-        resultado = importar_estado(
+        revision = revisar_estado(
             Path(args.importar_estado),
             bancos.bancos[args.banco],
             repositorio,
             cuenta=args.cuenta,
             desde=args.desde,
             hasta=args.hasta,
-            tope_bytes=bancos.tope_bytes,
+            topes=bancos.topes,
             saldo_anterior_centavos=args.saldo_anterior,
             saldo_final_centavos=args.saldo_final,
         )
     except EstadoRechazado as e:
-        problemas = "\n".join(f"  - {p.mensaje}" for p in e.problemas)
-        raise SystemExit(f"Estado rechazado; no se guardó nada:\n{problemas}") from e
-    estado = resultado.estado
-    tipos = ", ".join(f"{cuantos} {tipo}" for tipo, cuantos in resultado.por_tipo.items())
+        _rechazado(e)
+    # El resumen va siempre antes de guardar: sin --confirmar no se escribe nada.
+    estado = revision.estado
+    tipos = ", ".join(f"{cuantos} {tipo}" for tipo, cuantos in revision.por_tipo.items())
     print(
-        f"Estado importado (#{estado.id}): {estado.banco}/{estado.cuenta}, "
+        f"Estado a importar: {estado.banco}/{estado.cuenta}, "
         f"{estado.periodo_desde} a {estado.periodo_hasta}."
     )
     print(
         f"  Saldo {plata(estado.saldo_anterior_centavos)} → {plata(estado.saldo_final_centavos)} "
-        f"con {resultado.movimientos} movimientos{': ' + tipos if tipos else ''}."
+        f"con {revision.movimientos} movimientos{': ' + tipos if tipos else ''}."
     )
-    for aviso in resultado.avisos:
+    print(
+        f"  Entran {plata(estado.creditos_centavos)} en "
+        f"{revision.creditos} movimiento{'' if revision.creditos == 1 else 's'} "
+        f"y salen {plata(estado.debitos_centavos)} en {revision.debitos}."
+    )
+    for aviso in revision.avisos:
         print(f"  Aviso: {aviso}")
+    if not args.confirmar:
+        print("No se guardó nada. Si el resumen está bien, repite el comando con --confirmar.")
+        return
+    try:
+        resultado = guardar_revision(revision, repositorio)
+    except EstadoRechazado as e:
+        _rechazado(e)
+    # Un aviso nuevo solo puede aparecer si otro proceso importó entre la revisión y el guardado.
+    for aviso in resultado.avisos:
+        if aviso not in revision.avisos:
+            print(f"  Aviso: {aviso}")
+    print(f"Estado importado (#{resultado.estado.id}).")
+
+
+def _rechazado(error: EstadoRechazado) -> NoReturn:
+    problemas = "\n".join(f"  - {p.mensaje}" for p in error.problemas)
+    raise SystemExit(f"Estado rechazado; no se guardó nada:\n{problemas}") from error
 
 
 def _mes(texto: str) -> tuple[date, date]:

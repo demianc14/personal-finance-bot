@@ -48,7 +48,7 @@ def _importar(engine: Engine, ruta: Path, mes: int = 3, **cambios: Any) -> Any:
         "cuenta": "ahorros",
         "desde": date(2026, mes, 1),
         "hasta": date(2026, mes, 30),
-        "tope_bytes": BANCOS.tope_bytes,
+        "topes": BANCOS.topes,
         "saldo_anterior_centavos": 100_000 if mes == 3 else 123_405,
         "saldo_final_centavos": 123_405 if mes == 3 else 120_405,
     } | cambios
@@ -171,17 +171,18 @@ def test_guardar_es_todo_o_nada(engine: Engine) -> None:
         movimientos=(bueno, malo),
     )
     with pytest.raises(IntegrityError):
-        RepositorioEstados(engine).guardar(estado)
+        RepositorioEstados(engine).guardar(estado, revisar=lambda _vigentes: None)
     assert _contar(engine) == (0, 0)
 
 
 def test_la_base_es_la_ultima_defensa_contra_el_archivo_repetido(
     engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Dos importaciones a la vez: la verificación no ve a la otra, el índice único sí."""
+    """Si la revisión no viera el estado ya guardado, el índice único del hash lo frena igual."""
     ruta = _archivo(tmp_path, MARZO)
     _importar(engine, ruta)
     monkeypatch.setattr(RepositorioEstados, "vigentes", lambda _: [])
+    monkeypatch.setattr(RepositorioEstados, "_vigentes", staticmethod(lambda _sesion: []))
     with pytest.raises(EstadoRechazado) as error:
         _importar(engine, ruta)
     assert [(p.codigo, p.mensaje) for p in error.value.problemas] == [
@@ -190,26 +191,40 @@ def test_la_base_es_la_ultima_defensa_contra_el_archivo_repetido(
     assert _contar(engine) == (1, 3)
 
 
-# --- Continuidad: avisa y guarda ---
+# --- Continuidad: un saldo que no encadena rechaza; un hueco avisa ---
 
 
-def test_la_continuidad_avisa_pero_el_estado_entra(engine: Engine, tmp_path: Path) -> None:
+def test_la_continuidad_rota_rechaza_y_no_guarda(engine: Engine, tmp_path: Path) -> None:
     _importar(engine, _archivo(tmp_path, MARZO), hasta=date(2026, 3, 31))
     # Con un peso menos en la columna de saldo, abril empieza en 1233.05 y no en 1234.05.
     abril = _archivo(tmp_path, ABRIL.replace("1204.05", "1203.05"), "abril.csv")
-    resultado = _importar(
-        engine, abril, mes=4, saldo_anterior_centavos=123_305, saldo_final_centavos=120_305
-    )
-    assert resultado.avisos == (
-        "El estado #1 (2026-03-01 a 2026-03-31) cerró con 1234.05 y este empieza con 1233.05: "
-        "hay -1.00 de diferencia entre los dos.",
-    )
-    assert _contar(engine) == (2, 4)
+    with pytest.raises(EstadoRechazado) as error:
+        _importar(
+            engine, abril, mes=4, saldo_anterior_centavos=123_305, saldo_final_centavos=120_305
+        )
+    assert [(p.codigo, p.mensaje) for p in error.value.problemas] == [
+        (
+            "continuidad",
+            "El estado #1 (2026-03-01 a 2026-03-31) cerró con 1234.05 y este empieza con "
+            "1233.05: hay -1.00 de diferencia entre los dos.",
+        )
+    ]
+    assert _contar(engine) == (1, 3)
 
 
 def test_dos_meses_seguidos_que_empatan_no_avisan(engine: Engine, tmp_path: Path) -> None:
     _importar(engine, _archivo(tmp_path, MARZO), hasta=date(2026, 3, 31))
     assert _importar(engine, _archivo(tmp_path, ABRIL, "abril.csv"), mes=4).avisos == ()
+
+
+def test_un_hueco_entre_meses_avisa_y_entra(engine: Engine, tmp_path: Path) -> None:
+    _importar(engine, _archivo(tmp_path, MARZO))  # termina el 30: falta el 31
+    resultado = _importar(engine, _archivo(tmp_path, ABRIL, "abril.csv"), mes=4)
+    assert resultado.avisos == (
+        "Entre el estado #1 (2026-03-01 a 2026-03-30) y este faltan los días 2026-03-31 a "
+        "2026-03-31: la continuidad del saldo no se pudo verificar.",
+    )
+    assert _contar(engine) == (2, 4)
 
 
 # --- La línea de comandos ---
@@ -234,7 +249,14 @@ PERIODO = ("--desde", "2026-03-01", "--hasta", "2026-03-31")
 SALDOS = ("--saldo-anterior", "1000", "--saldo-final", "1234.05")
 
 
-def test_la_cli_importa_y_cuenta_lo_que_guardo(
+RESUMEN = (
+    "Estado a importar: banco_sintetico/ahorros, 2026-03-01 a 2026-03-31.\n"
+    "  Saldo 1000.00 → 1234.05 con 3 movimientos: 1 debito, 1 credito, 1 comision.\n"
+    "  Entran 250.00 en 1 movimiento y salen 15.95 en 2.\n"
+)
+
+
+def test_la_cli_sin_confirmar_muestra_el_resumen_y_no_guarda(
     base: Engine,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -242,10 +264,21 @@ def test_la_cli_importa_y_cuenta_lo_que_guardo(
 ) -> None:
     ruta = _archivo(tmp_path, MARZO)
     _cli(monkeypatch, "--importar-estado", str(ruta), *ARGUMENTOS, *PERIODO, *SALDOS)
-    assert capsys.readouterr().out == (
-        "Estado importado (#1): banco_sintetico/ahorros, 2026-03-01 a 2026-03-31.\n"
-        "  Saldo 1000.00 → 1234.05 con 3 movimientos: 1 debito, 1 credito, 1 comision.\n"
+    assert capsys.readouterr().out == RESUMEN + (
+        "No se guardó nada. Si el resumen está bien, repite el comando con --confirmar.\n"
     )
+    assert _contar(base) == (0, 0)
+
+
+def test_la_cli_con_confirmar_muestra_el_resumen_y_guarda(
+    base: Engine,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    ruta = _archivo(tmp_path, MARZO)
+    _cli(monkeypatch, "--importar-estado", str(ruta), *ARGUMENTOS, *PERIODO, *SALDOS, "--confirmar")
+    assert capsys.readouterr().out == RESUMEN + "Estado importado (#1).\n"
     assert _contar(base) == (1, 3)
 
 
@@ -274,15 +307,17 @@ def test_la_cli_rechaza_con_el_mensaje_exacto_y_no_guarda(
     assert _contar(base) == (0, 0)
 
 
-def test_la_cli_muestra_los_avisos(
+def test_la_cli_muestra_los_avisos_antes_de_guardar(
     base: Engine,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     marzo = _archivo(tmp_path, MARZO)
-    _cli(monkeypatch, "--importar-estado", str(marzo), *ARGUMENTOS, *PERIODO, *SALDOS)
-    abril = _archivo(tmp_path, ABRIL.replace("1204.05", "1203.05"), "abril.csv")
+    _cli(
+        monkeypatch, "--importar-estado", str(marzo), *ARGUMENTOS, *PERIODO, *SALDOS, "--confirmar"
+    )
+    abril = _archivo(tmp_path, ABRIL, "abril.csv")
     capsys.readouterr()
     _cli(
         monkeypatch,
@@ -290,18 +325,34 @@ def test_la_cli_muestra_los_avisos(
         str(abril),
         *ARGUMENTOS,
         "--desde",
-        "2026-04-01",
+        "2026-04-02",
         "--hasta",
         "2026-04-30",
         "--saldo-anterior",
-        "1233.05",
+        "1234.05",
         "--saldo-final",
-        "1203.05",
+        "1204.05",
     )
-    assert capsys.readouterr().out.splitlines()[2] == (
-        "  Aviso: El estado #1 (2026-03-01 a 2026-03-31) cerró con 1234.05 y este empieza con "
-        "1233.05: hay -1.00 de diferencia entre los dos."
+    assert capsys.readouterr().out.splitlines()[3] == (
+        "  Aviso: Entre el estado #1 (2026-03-01 a 2026-03-31) y este faltan los días "
+        "2026-04-01 a 2026-04-01: la continuidad del saldo no se pudo verificar."
     )
+    assert _contar(base) == (1, 3)
+
+
+def test_la_cli_con_confirmar_rechaza_una_cuenta_desconocida(
+    base: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ruta = _archivo(tmp_path, MARZO)
+    otra = ("--banco", "banco_sintetico", "--cuenta", "corriente")
+    with pytest.raises(SystemExit) as salida:
+        _cli(monkeypatch, "--importar-estado", str(ruta), *otra, *PERIODO, *SALDOS, "--confirmar")
+    assert salida.value.code == (
+        "Estado rechazado; no se guardó nada:\n"
+        "  - La cuenta 'corriente' no está entre las de Banco Sintético en config/bancos.yaml "
+        "(ahorros y visa). Si es una cuenta nueva, agrégala ahí."
+    )
+    assert _contar(base) == (0, 0)
 
 
 @pytest.mark.parametrize(

@@ -46,7 +46,7 @@ def _leer(
         "cuenta": "ahorros",
         "desde": date(2026, 3, 1),
         "hasta": date(2026, 3, 31),
-        "tope_bytes": BANCOS.tope_bytes,
+        "topes": BANCOS.topes,
         # Los de BUENO. La ingesta no los compara con el archivo: eso es de la verificación.
         "saldo_anterior_centavos": 100_000,
         "saldo_final_centavos": 123_405,
@@ -171,7 +171,7 @@ def test_el_tope_de_tamano_rechaza_antes_de_leer(
 ) -> None:
     ruta = tmp_path / "enorme.csv"
     with ruta.open("wb") as f:
-        f.truncate(BANCOS.tope_bytes + 1)
+        f.truncate(BANCOS.topes.bytes + 1)
 
     def _no_abrir(*_: object, **__: object) -> None:
         raise AssertionError("el archivo se abrió")
@@ -185,7 +185,7 @@ def test_el_tope_de_tamano_rechaza_antes_de_leer(
             cuenta="ahorros",
             desde=date(2026, 3, 1),
             hasta=date(2026, 3, 31),
-            tope_bytes=BANCOS.tope_bytes,
+            topes=BANCOS.topes,
             saldo_anterior_centavos=0,
             saldo_final_centavos=0,
         )
@@ -202,7 +202,7 @@ def test_un_archivo_que_no_existe(tmp_path: Path) -> None:
             cuenta="ahorros",
             desde=date(2026, 3, 1),
             hasta=date(2026, 3, 31),
-            tope_bytes=1000,
+            topes=BANCOS.topes,
             saldo_anterior_centavos=0,
             saldo_final_centavos=0,
         )
@@ -322,7 +322,7 @@ def test_un_encabezado_de_otro_banco_se_rechaza_antes_de_leer_montos(tmp_path: P
         (
             "encabezado",
             "Línea 1: al encabezado le faltan las columnas 'Fecha', 'Descripción', 'Monto' "
-            "y 'Saldo'; trae 'Date', 'Description' y 'Amount'. ¿Es un estado de Banco Sintético?",
+            "y 'Saldo'; trae 3 columnas. ¿Es un estado de Banco Sintético?",
         )
     ]
 
@@ -332,8 +332,8 @@ def test_falta_una_sola_columna(tmp_path: Path) -> None:
     assert _rechazo(tmp_path, contenido) == [
         (
             "encabezado",
-            "Línea 1: al encabezado le faltan las columnas 'Saldo'; trae 'Fecha', "
-            "'Descripción' y 'Monto'. ¿Es un estado de Banco Sintético?",
+            "Línea 1: al encabezado le faltan las columnas 'Saldo'; trae 3 columnas. "
+            "¿Es un estado de Banco Sintético?",
         )
     ]
 
@@ -389,7 +389,7 @@ def test_los_dos_saldos_declarados_son_obligatorios(
         "cuenta": "ahorros",
         "desde": date(2026, 3, 1),
         "hasta": date(2026, 3, 31),
-        "tope_bytes": BANCOS.tope_bytes,
+        "topes": BANCOS.topes,
         "saldo_anterior_centavos": 100_000,
         "saldo_final_centavos": 123_405,
     }

@@ -10,22 +10,23 @@ import csv
 import hashlib
 import io
 import re
+import unicodedata
 from collections.abc import Sequence
 from datetime import date, datetime
 from pathlib import Path
 
-from family_expense_bot.conciliacion.bancos import Banco, asignar_tipo
+from family_expense_bot.conciliacion.bancos import Banco, Topes, asignar_tipo, es_etiqueta_de_cuenta
 from family_expense_bot.conciliacion.contrato import (
     EstadoLeido,
     EstadoRechazado,
     MovimientoLeido,
     Problema,
+    plata,
 )
 
 MAXIMO_DESCRIPCION = 500
 """El ancho de `movimientos.descripcion`. Una más larga se rechaza: cortarla sería adivinar."""
 
-_CUENTA = re.compile(r"[a-z][a-z0-9_-]{0,39}")
 _DIGITOS = r"\d{1,15}"
 """Quince dígitos enteros caben de sobra en el entero de SQLite y no son un monto real."""
 
@@ -47,7 +48,7 @@ def leer_estado(
     cuenta: str,
     desde: date,
     hasta: date,
-    tope_bytes: int,
+    topes: Topes,
     saldo_anterior_centavos: int,
     saldo_final_centavos: int,
 ) -> EstadoLeido:
@@ -59,12 +60,21 @@ def leer_estado(
     fila no se verificaría contra nada y un archivo cortado en las puntas cuadraría.
     """
     problemas = []
-    if not _CUENTA.fullmatch(cuenta) or re.search(r"\d{4}", cuenta):
+    if not es_etiqueta_de_cuenta(cuenta):
         problemas.append(
             Problema(
                 codigo="cuenta",
                 mensaje=f"La cuenta {cuenta!r} no es una etiqueta válida: minúsculas, hasta 40 "
                 "caracteres y nunca el número de cuenta.",
+            )
+        )
+    elif cuenta not in banco.cuentas:
+        problemas.append(
+            Problema(
+                codigo="cuenta_desconocida",
+                mensaje=f"La cuenta {cuenta!r} no está entre las de {banco.nombre} en "
+                f"config/bancos.yaml ({_lista(banco.cuentas)}). Si es una cuenta nueva, "
+                "agrégala ahí.",
             )
         )
     if desde > hasta:
@@ -77,8 +87,10 @@ def leer_estado(
     if problemas:
         raise EstadoRechazado(problemas)
 
-    datos = _leer_bytes(ruta, tope_bytes)
-    movimientos = _movimientos(_filas(datos, banco), banco)
+    datos = _leer_bytes(ruta, topes.bytes)
+    movimientos = _movimientos(_filas(datos, banco), banco, topes)
+    if banco.signo == "positivo_sale":
+        _exigir_signo_de_tarjeta(movimientos, banco)
 
     invertir = -1 if banco.signo == "positivo_sale" else 1
 
@@ -92,6 +104,32 @@ def leer_estado(
         hash_archivo=hashlib.sha256(datos).hexdigest(),
         movimientos=tuple(movimientos),
     )
+
+
+def _exigir_signo_de_tarjeta(movimientos: Sequence[MovimientoLeido], banco: Banco) -> None:
+    """En una tarjeta casi todo es consumo: si hay más créditos que débitos, el signo está al revés.
+
+    El saldo cuadra igual con el signo invertido (los saldos declarados se invierten
+    con él), así que sin esta regla una tarjeta mal configurada entraría entera.
+    """
+    creditos = sum(1 for m in movimientos if m.monto_centavos > 0)
+    debitos = len(movimientos) - creditos
+    if creditos > debitos:
+        raise EstadoRechazado(
+            [
+                Problema(
+                    codigo="signo_tarjeta",
+                    mensaje=f"{banco.nombre} es una tarjeta y este estado trae "
+                    f"{_cuantos(creditos, 'crédito', 'créditos')} y "
+                    f"{_cuantos(debitos, 'débito', 'débitos')}: en una tarjeta casi todo es "
+                    "consumo. ¿Signo invertido? Revisa `signo` en config/bancos.yaml.",
+                )
+            ]
+        )
+
+
+def _cuantos(n: int, uno: str, varios: str) -> str:
+    return f"{n} {uno if n == 1 else varios}"
 
 
 def _leer_bytes(ruta: Path, tope_bytes: int) -> bytes:
@@ -153,7 +191,9 @@ def _filas(datos: bytes, banco: Banco) -> list[tuple[int, list[str]]]:
     return filas
 
 
-def _movimientos(filas: list[tuple[int, list[str]]], banco: Banco) -> list[MovimientoLeido]:
+def _movimientos(
+    filas: list[tuple[int, list[str]]], banco: Banco, topes: Topes
+) -> list[MovimientoLeido]:
     if len(filas) <= banco.filas_a_saltar or not any(filas[banco.filas_a_saltar][1]):
         raise EstadoRechazado(
             [
@@ -167,12 +207,23 @@ def _movimientos(filas: list[tuple[int, list[str]]], banco: Banco) -> list[Movim
     linea_encabezado, encabezado = filas[banco.filas_a_saltar]
     indices = _indices(linea_encabezado, encabezado, banco)
 
+    # Las líneas totalmente vacías se saltan, pero la numeración sigue.
+    con_datos = [(linea, fila) for linea, fila in filas[banco.filas_a_saltar + 1 :] if any(fila)]
+    if len(con_datos) > topes.filas:
+        raise EstadoRechazado(
+            [
+                Problema(
+                    codigo="demasiadas_filas",
+                    mensaje=f"El archivo trae {len(con_datos)} movimientos y el tope es "
+                    f"{topes.filas}: no se leyó.",
+                )
+            ]
+        )
+
     problemas: list[Problema] = []
     movimientos: list[MovimientoLeido] = []
-    for linea, fila in filas[banco.filas_a_saltar + 1 :]:
-        if not any(fila):
-            continue  # línea totalmente vacía: se salta, pero la numeración sigue
-        resultado = _movimiento(linea, fila, len(encabezado), indices, banco)
+    for linea, fila in con_datos:
+        resultado = _movimiento(linea, fila, len(encabezado), indices, banco, topes)
         if isinstance(resultado, Problema):
             problemas.append(resultado)
         else:
@@ -187,9 +238,12 @@ def _indices(linea: int, encabezado: list[str], banco: Banco) -> dict[str, int]:
     columnas = {campo: n for campo, n in banco.columnas.model_dump().items() if n is not None}
     faltan = [nombre for nombre in columnas.values() if nombre not in encabezado]
     if faltan:
+        # Los nombres que faltan salen del yaml; del archivo solo se cuenta cuántas trae,
+        # para no copiar al mensaje celdas que nadie revisó.
         problema = (
             f"Línea {linea}: al encabezado le faltan las columnas {_lista(faltan, comillas=True)}; "
-            f"trae {_lista(encabezado, comillas=True)}. ¿Es un estado de {banco.nombre}?"
+            f"trae {_cuantos(len(encabezado), 'columna', 'columnas')}. "
+            f"¿Es un estado de {banco.nombre}?"
         )
         raise EstadoRechazado([Problema(codigo="encabezado", linea=linea, mensaje=problema)])
     for nombre in columnas.values():
@@ -200,7 +254,7 @@ def _indices(linea: int, encabezado: list[str], banco: Banco) -> dict[str, int]:
 
 
 def _movimiento(
-    linea: int, fila: list[str], ancho: int, indices: dict[str, int], banco: Banco
+    linea: int, fila: list[str], ancho: int, indices: dict[str, int], banco: Banco, topes: Topes
 ) -> MovimientoLeido | Problema:
     def problema(codigo: str, mensaje: str) -> Problema:
         return Problema(codigo=codigo, linea=linea, mensaje=f"Línea {linea}: {mensaje}")
@@ -244,6 +298,12 @@ def _movimiento(
         )
     if monto == 0:
         return problema("monto_cero", "el monto es cero.")
+    if abs(monto) > topes.monto_centavos:
+        return problema(
+            "monto_tope",
+            f"el monto pasa del tope de {plata(topes.monto_centavos)} de config/bancos.yaml. "
+            "Si es real, sube `tope_monto` ahí.",
+        )
     if not con_signo and celda["debito"]:
         monto = -monto
 
@@ -258,6 +318,12 @@ def _movimiento(
     if banco.signo == "positivo_sale":
         monto, saldo = -monto, None if saldo is None else -saldo
 
+    if _con_control(celda["descripcion"]):
+        return problema(
+            "descripcion_control",
+            "la descripción trae caracteres de control (invisibles o que cambian cómo se ve "
+            "el texto).",
+        )
     if len(celda["descripcion"]) > MAXIMO_DESCRIPCION:
         return problema(
             "descripcion_larga",
@@ -273,6 +339,16 @@ def _movimiento(
         saldo_centavos=saldo,
         tipo=asignar_tipo(celda["descripcion"], monto, banco.tipos),
     )
+
+
+def _con_control(texto: str) -> bool:
+    """Caracteres de control (Cc: NUL, escape, tabulador) o de formato (Cf: el que
+    invierte el texto, el espacio de ancho cero).
+
+    Ninguno lo escribe un banco en una descripción, y en una terminal o una planilla
+    cambian lo que se ve: mejor rechazar que adivinar qué decía.
+    """
+    return any(unicodedata.category(c) in ("Cc", "Cf") for c in texto)
 
 
 def _centavos(texto: str, separador: str, con_signo: bool) -> int | None:
