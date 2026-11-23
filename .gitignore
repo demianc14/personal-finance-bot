@@ -12,14 +12,35 @@ exports/
 *.parquet
 *.pbix
 *.pdf
+# Otros formatos de planilla y de export bancario
+*.tsv
+*.xlsm
+*.xlsb
+*.ods
+*.numbers
+*.ofx
+*.qif
+# El texto de un PDF (lo que va a volcar el parser de G1b)
+*.txt
+# Copias de la base: WAL de SQLite, volcados, respaldos y comprimidos
+*-wal
+*-shm
+*.sql
+*.bak
+*.zip
+*.gz
+# tests/test_privacy.py exige que la tupla DATOS y esta lista coincidan.
 
 # Únicas excepciones: lo sintético que genera scripts/estado_sintetico.py, y
 # tests/test_privacy.py exige que cada archivo sea, byte a byte, lo que sale del
 # script: los estados de cuenta (CSV o PDF, solo en esta carpeta) y las etiquetas
-# de verdad de la conciliación (ids y números de línea, sin montos).
+# de verdad de la conciliación (ids y números de línea, sin montos). Las
+# corridas de scripts/medir_cruce.py van como cruce-<commit>.txt; el test
+# rechaza cualquier otro nombre.
 !tests/fixtures/estados/*.csv
 !tests/fixtures/estados/*.pdf
 !evals/pares_verdaderos.csv
+!evals/corridas/cruce-*.txt
 
 # Secretos (token del bot, API keys del LLM)
 .env

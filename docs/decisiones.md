@@ -397,6 +397,42 @@ variables secretas de los `.env.example` vayan vacías y busca patrones de
 tokens en **todos los objetos del historial de git**, no solo en la versión
 actual: un push publica el historial completo.
 
+### Estados de cuenta en el historial (22-nov-2026)
+
+Una auditoría reprodujo el hueco: un estado que entra en un commit y se borra
+en el siguiente pasaba todas las guardas. El test del historial solo preguntaba
+si alguna ruta vieja estaba ignorada, y `tests/fixtures/estados/real.csv` no lo
+está (la carpeta es una excepción). Tampoco veía un `marzo.csv` cambiado y
+después restaurado, ni un `.txt` con el texto de un PDF. Desde esta fecha:
+
+- **Se revisa el contenido de cada versión**, no la ruta. Toda versión de un
+  archivo de datos que alguna vez entró a un commit (`git log --raw -m`, merges
+  incluidos) tiene que ser lo que genera hoy `scripts/estado_sintetico.py`, o
+  estar en `tests/blobs_sinteticos`, que guarda las versiones viejas. Cada línea
+  de esa lista se verifica una vez, corriendo el generador del commit que la
+  produjo. Al regenerar los fixtures el test falla y dice qué agregar.
+- **`.gitignore` y la tupla `DATOS` del test son la misma lista**, y un test lo
+  exige. Entraron `.txt`, `.tsv`, `.ods`, `.xlsm`, `.xlsb`, `.numbers`, `.ofx`,
+  `.qif`, `.sql`, `.bak`, `.zip`, `.gz` y los `-wal`/`-shm` de SQLite. La única
+  excepción nueva son las corridas `evals/corridas/cruce-<commit>.txt`.
+- **El hook corre antes del commit y antes del push**, no solo en CI, que llega
+  cuando el dato ya está publicado. Se instala una vez por clon:
+
+  ```bash
+  pre-commit install --hook-type pre-commit --hook-type pre-push
+  ```
+
+  Comprobación: `pre-commit run privacidad --all-files` dice `Passed`. El hook
+  revisa el historial de `HEAD` (`PRIVACIDAD_REFS=HEAD`) para que una rama local
+  de otra tarea no frene esta; CI revisa todas las ramas y tags.
+
+**Límites.** `git commit --no-verify` y `git push --no-verify` se saltan el
+hook; CI lo ataja después, ya publicado. Las imágenes de `docs/img/`, las
+corridas `.jsonl` de `evals/` y el contenido de `cruce-*.txt` no se comparan
+con nada: no hay un generador que diga cuáles son los bytes correctos. Con
+`PRIVACIDAD_REFS=HEAD`, el pre-push de una rama que no es la actual
+(`git push origin otra`) no revisa esa rama.
+
 En la versión n8n, las credenciales viven cifradas en la base de n8n
 (`n8n/.datos/`, ignorada), el workflow exportado solo tiene referencias
 (`id` y `name`), y los IDs de Telegram entran por el entorno. Las ejecuciones

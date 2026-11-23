@@ -4,3 +4,17 @@ repos:
     hooks:
       - id: ruff-check
       - id: ruff-format
+  # Las guardas de privacidad antes del commit y antes del push: CI llega tarde,
+  # cuando el push ya publicó el dato. Se instala con
+  # `pre-commit install --hook-type pre-commit --hook-type pre-push`
+  # (docs/decisiones.md). PYTHONPATH=src prueba el código de este checkout, también
+  # en un worktree; PRIVACIDAD_REFS=HEAD revisa solo el historial de esta rama.
+  - repo: local
+    hooks:
+      - id: privacidad
+        name: guardas de privacidad (tests/test_privacy.py)
+        entry: env PYTHONPATH=src PRIVACIDAD_REFS=HEAD python -m pytest tests/test_privacy.py -q -p no:cacheprovider
+        language: system
+        always_run: true
+        pass_filenames: false
+        stages: [pre-commit, pre-push]

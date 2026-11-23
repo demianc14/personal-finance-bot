@@ -43,7 +43,7 @@ cp .env.example .env          # token de @BotFather, API key de Gemini, tu ID y 
 family-expense-bot            # el bot (polling)
 family-expense-bot --app      # la Mini App en 127.0.0.1:8080; ver docs/mini-app.md
 pytest && ruff check . && mypy
-pre-commit install            # ruff antes de cada commit
+pre-commit install --hook-type pre-commit --hook-type pre-push  # ruff y privacidad; ver docs/decisiones.md
 ```
 
 O, con Docker, bot y Mini App con un comando (la base queda en `data/processed/`):
