@@ -568,7 +568,8 @@ casos:
 
   # --- devoluciones e ingresos: no son gasto ----------------------------------------
   # Agregados con la mejora 2 (docs/evaluacion.md). Son los mismos textos de
-  # tests/fixtures/no_es_gasto.yaml; todavía no tienen corrida contra Gemini.
+  # tests/fixtures/no_es_gasto.yaml, corridos una vez contra Gemini el 2026-11-12.
+  # Etiquetas puestas por Claude (12-nov) y revisadas por Demian (23-nov).
 
   - id: reembolso_seguro
     remitente: papa
@@ -634,7 +635,7 @@ casos:
   - id: pague_lo_prestado
     remitente: demian
     texto: "pagué lo que me prestaron, 50"
-    oro: { monto: "50", fecha: "2026-03-15", atribuido_a: demian }
+    oro: { monto: "50", categoria: deudas_cuotas, fecha: "2026-03-15", atribuido_a: demian }
     etiquetas: [parece_no_gasto]
 
   - id: pague_con_lo_devuelto
@@ -691,11 +692,13 @@ casos:
     oro: { monto: "8", categoria: transporte, fecha: "2026-03-15", atribuido_a: papa }
     etiquetas: [parece_no_gasto]
 
-  # "mis papás" son dos personas: de quién es no se puntúa.
+  # "mis papás" son dos personas: no hay un solo valor correcto para de quién
+  # es, así que no se puntúa, pero tiene que preguntar.
   - id: otros_me_pagaron_la_matricula
     remitente: demian
     texto: "mis papás me pagaron la matrícula, 300"
     oro: { monto: "300", categoria: educacion, fecha: "2026-03-15" }
+    debe_dudar: [atribuido_a]
     etiquetas: [parece_no_gasto]
 
   - id: vuelto_mal_devuelto

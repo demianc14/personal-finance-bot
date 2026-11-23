@@ -203,6 +203,43 @@ Límites conocidos que dejó la corrida:
 - "Mi papá me transfirió 50" dudó en categoría, pero quedó atribuido al papá con
   confianza alta. El caso no puntúa de quién es, porque no es un gasto.
 
+## Quién etiquetó
+
+| Casos | Etiquetó | Revisó |
+|---|---|---|
+| Los 84 originales | OJO: el repo no dice quién (entraron el 2026-10-22) | Sin una revisión aparte |
+| Los 20 de devoluciones e ingresos (`no_gasto` y `parece_no_gasto`, al final del yaml) | Claude, el 2026-11-12 | Demian, el 2026-11-23 |
+
+En la revisión, Demian aceptó las 20 etiquetas y les hizo dos cambios:
+
+- **`pague_lo_prestado`** ("pagué lo que me prestaron, 50") ahora puntúa la
+  categoría `deudas_cuotas`, porque es el pago de una deuda.
+- **`otros_me_pagaron_la_matricula`** ("mis papás me pagaron la matrícula") tiene
+  que dudar de quién es el gasto. Son dos personas, así que no hay un solo valor
+  correcto para puntuar.
+
+Se confirmaron sin cambios los dos casos de los que salen los errores silenciosos
+de `atribuido_a`: "le devolví 30 a mi hermana" y "le pagué 40 a mi hermana…" son
+gastos de quien los escribe. Los no-gastos siguen sin puntuar el monto, y
+`costo_de_la_devolucion` y `yo_pague_a_otro` siguen sin puntuar la categoría.
+
+Con las etiquetas revisadas, sobre la misma corrida (`--desde-corrida`, 0 llamadas):
+
+| Métrica | Antes de la revisión | Después |
+|---|---:|---:|
+| Categoría: puntuados | 82 | 83 |
+| Categoría: acierto confiado / con duda | 72 / 8 | 73 / 8 |
+| Categoría: error silencioso | 2 | 2 |
+| De quién es: error silencioso | 2 de 99 | 2 de 99 |
+| Dudó cuando debía | 32 de 34 | 33 de 35 |
+
+Las filas de [antes → después](#mejoras-antes--después) se midieron con las
+etiquetas de antes de la revisión y quedan como se midieron.
+
+```bash
+family-expense-bot --evaluar --desde-corrida evals/corridas/gemini-3.5-flash-lite-64386658.jsonl
+```
+
 ## Correrlo
 
 ```bash
@@ -231,4 +268,5 @@ el modelo, que no es determinista, mueva los números.
 - **Una sola corrida.** Gemini no es determinista, así que repetir la
   corrida puede mover un par de casos.
 - **Las etiquetas son criterio humano.** Los dos errores silenciosos de categoría
-  muestran que a veces la etiqueta es la discutible.
+  muestran que a veces la etiqueta es la discutible. Veinte de los casos los
+  etiquetó Claude y Demian los revisó después ([quién etiquetó](#quién-etiquetó)).
