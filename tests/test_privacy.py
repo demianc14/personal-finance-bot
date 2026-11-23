@@ -50,6 +50,9 @@ DEBEN_IGNORARSE = [
     "gastos.sqlite-wal",
     "gastos.db.bak",
     "respaldo.sql",
+    "respaldo.zip",
+    "banco.ofx",
+    "banco.qif",
 ]
 
 
@@ -473,3 +476,101 @@ def test_los_pares_verdaderos_se_versionan_y_son_lo_que_genera_el_script() -> No
     )
     assert ignorado.returncode == 1
     assert (ROOT / PARES_VERDADEROS).read_bytes() == cargar().pares_verdaderos()
+
+
+# --- Lista blanca: lo que no está acá no se versiona, con ninguna extensión ---
+
+EXTENSIONES_VERSIONABLES = frozenset(
+    {
+        ".py",
+        ".md",
+        ".yaml",
+        ".yml",
+        ".toml",
+        ".json",
+        ".jsonl",
+        ".js",
+        ".mjs",
+        ".sh",
+        ".html",
+        ".png",
+        ".gif",
+    }
+)
+"""Extensiones que se versionan en cualquier carpeta. Agregar una es una decisión, no descuido."""
+
+NOMBRES_VERSIONABLES = frozenset(
+    {"Dockerfile", ".gitignore", ".dockerignore", ".gitkeep", ".env.example"}
+)
+RUTAS_VERSIONABLES = frozenset({"tests/blobs_sinteticos"})
+
+
+def _no_versionables(raiz: Path, datos_permitidos: set[str]) -> list[str]:
+    """Archivos versionados que no pasan la lista blanca.
+
+    Los de datos (CSV, PDF, txt) solo pasan si son los sintéticos o una corrida de
+    cruce; el contenido de esos lo revisan los tests de arriba.
+    """
+    archivos = subprocess.run(
+        ["git", "ls-files", "-z"], cwd=raiz, check=True, capture_output=True, text=True
+    ).stdout.split("\0")
+    return [
+        nombre
+        for nombre in filter(None, archivos)
+        if not (
+            Path(nombre).suffix.lower() in EXTENSIONES_VERSIONABLES
+            or Path(nombre).name in NOMBRES_VERSIONABLES
+            or nombre in RUTAS_VERSIONABLES
+            or nombre in datos_permitidos
+            or _es_corrida_de_cruce(nombre)
+        )
+    ]
+
+
+@pytest.fixture
+def repo_con_formatos_raros(tmp_path: Path) -> Path:
+    _git(tmp_path, "init", "-q")
+    estados = tmp_path / "tests" / "fixtures" / "estados"
+    estados.mkdir(parents=True)
+    for nombre in [
+        "main.py",
+        "README.md",
+        "Dockerfile",
+        ".gitignore",
+        "tests/fixtures/estados/pichincha.pdf",
+        "tests/fixtures/estados/marzo.csv",
+        "evals/corridas/cruce-abc1234.txt",
+        # Ninguno de estos está en la lista blanca:
+        "gastos.docx",
+        "tests/fixtures/estados/otro.pdf",
+        "notas",
+        "export.XLSX.json.bak",
+        "respaldo.7z",
+    ]:
+        ruta = tmp_path / nombre
+        ruta.parent.mkdir(parents=True, exist_ok=True)
+        ruta.write_bytes(b"x\n")
+    _git(tmp_path, "add", "-Af")
+    _git(tmp_path, "commit", "-qm", "todo")
+    return tmp_path
+
+
+def test_la_lista_blanca_rechaza_toda_extension_que_no_esta_en_ella(
+    repo_con_formatos_raros: Path,
+) -> None:
+    permitidos = {"tests/fixtures/estados/pichincha.pdf", "tests/fixtures/estados/marzo.csv"}
+    assert sorted(_no_versionables(repo_con_formatos_raros, permitidos)) == [
+        "export.XLSX.json.bak",
+        "gastos.docx",
+        "notas",
+        "respaldo.7z",
+        "tests/fixtures/estados/otro.pdf",
+    ]
+
+
+def test_todo_lo_versionado_esta_en_la_lista_blanca() -> None:
+    """Un `.docx`, un `.7z` o un archivo sin extensión con montos hace fallar esto."""
+    permitidos = {f"{ESTADOS_SINTETICOS}/{nombre}" for nombre in _sinteticos()}
+    permitidos.add(PARES_VERDADEROS)
+    colados = _no_versionables(ROOT, permitidos)
+    assert not colados, f"Archivos versionados fuera de la lista blanca: {colados}"

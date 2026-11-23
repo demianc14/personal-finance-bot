@@ -150,8 +150,27 @@ COLUMNAS = (
 )
 
 
+INICIOS_DE_FORMULA = ("=", "+", "-", "@", "\t", "\r")
+"""Con qué empieza una celda que Excel, LibreOffice o Power BI pueden leer como fórmula."""
+
+
+def neutralizar_celda(texto: str) -> str:
+    """Antepone `'` si la celda podría ejecutarse como fórmula al abrir el CSV.
+
+    Cuentan también los espacios antes del signo (" =1+1"): algunas planillas
+    los recortan. Solo para celdas de texto: un monto negativo dejaría de ser
+    número. La base guarda el texto literal; esto se aplica únicamente al exportar.
+    """
+    if texto.lstrip(" ").startswith(INICIOS_DE_FORMULA):
+        return "'" + texto
+    return texto
+
+
 def exportar_csv(gastos: Sequence[GastoRegistrado], ruta: Path) -> Path:
-    """Export para Power BI. El archivo lleva montos reales: nunca se versiona."""
+    """Export para Power BI. El archivo lleva montos reales: nunca se versiona.
+
+    Las celdas de texto pasan por `neutralizar_celda`.
+    """
     ruta.parent.mkdir(parents=True, exist_ok=True)
     with ruta.open("w", newline="", encoding="utf-8") as f:
         escritor = csv.writer(f)
@@ -161,14 +180,14 @@ def exportar_csv(gastos: Sequence[GastoRegistrado], ruta: Path) -> Path:
                 [
                     g.id,
                     g.fecha.isoformat(),
-                    g.categoria,
-                    g.subcategoria or "",
-                    g.atribuido_a,
+                    neutralizar_celda(g.categoria),
+                    neutralizar_celda(g.subcategoria or ""),
+                    neutralizar_celda(g.atribuido_a),
                     f"{g.monto:.2f}",
-                    g.descripcion,
+                    neutralizar_celda(g.descripcion),
                     g.registrado_por,
                     g.corregido_manualmente,
-                    g.origen,
+                    neutralizar_celda(g.origen),
                     g.creado_en.astimezone(UTC).isoformat(),
                 ]
             )

@@ -149,7 +149,8 @@ Limitación conocida (decidida el 12-nov): la conciliación es **uno a uno y sol
 - [ ] Vistas en `sql/vistas.sql`: `v_cobertura_mensual`, `v_no_registrados`, `v_recurrentes`, `v_costo_banco` y `v_gasto_real_bolsillo`.
 - [ ] Tests de SQL: conteos, totales contra el estado de cuenta y ningún movimiento conciliado dos veces.
 - [ ] Mini App: lista "Sin registrar" con Registrar o Ignorar, por el flujo de confirmación de siempre.
-- [ ] `--exportar` (gastos) y `--exportar-bi` neutralizan las celdas de texto que empiezan con `=`, `+`, `-` o `@`, en una PR aparte de la ingesta (decisión en `docs/conciliacion.md`).
+- [x] `--exportar` (gastos) neutraliza las celdas de texto que empiezan con `=`, `+`, `-`, `@`, tabulador o retorno, también tras espacios (`neutralizar_celda`, decisión en `docs/conciliacion.md`).
+- [ ] `--exportar-bi` usa `neutralizar_celda` en sus celdas de texto.
 - [ ] `--exportar-bi` escribe las vistas a CSV; dashboard de 3 páginas (Cobertura, Gasto real, Costo del banco y suscripciones) con datos sintéticos.
 - [x] Medición: precisión y recall por regla y por `categoria_caso` sobre `evals/pares_verdaderos.csv` (`python scripts/medir_cruce.py`, una sola corrida con las reglas congeladas). Tabla en `docs/conciliacion.md`.
 - [ ] **Cierre:** vistas con tests, "Sin registrar" funcionando, dashboard en PNG en `docs/img/` (no PDF: decidido el 14-nov), tabla de precisión y recall en `docs/conciliacion.md` y una línea en el README.
