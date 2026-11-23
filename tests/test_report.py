@@ -1,3 +1,4 @@
+import csv
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -8,6 +9,7 @@ from family_expense_bot.dashboard.report import (
     calcular_calidad,
     exportar_csv,
     inicio_y_fin_utc,
+    neutralizar_celda,
     rango_del_mes,
     resumen_mensual,
     totales_por_categoria,
@@ -168,3 +170,41 @@ def test_exportar_csv_escribe_encabezado_y_filas(tmp_path: Path) -> None:
 def test_exportar_csv_sin_gastos_deja_solo_el_encabezado(tmp_path: Path) -> None:
     ruta = exportar_csv([], tmp_path / "gastos.csv")
     assert len(ruta.read_text(encoding="utf-8").splitlines()) == 1
+
+
+# --- inyección de fórmulas ------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "celda",
+    [
+        '=HYPERLINK("http://ejemplo.invalid","ver")',
+        "+1+1",
+        "-2+3",
+        "@SUM(A1)",
+        "\t=1+1",
+        "\r=1+1",
+        " =1+1",
+        "   @SUM(A1)",
+    ],
+)
+def test_neutralizar_celda_antepone_apostrofo_a_lo_que_parece_formula(celda: str) -> None:
+    assert neutralizar_celda(celda) == "'" + celda
+
+
+@pytest.mark.parametrize("celda", ["", "compra", "taxi al aeropuerto", "pago 15", " compra", "a=1"])
+def test_neutralizar_celda_deja_igual_el_texto_normal(celda: str) -> None:
+    assert neutralizar_celda(celda) == celda
+
+
+def test_exportar_csv_neutraliza_las_celdas_de_texto(tmp_path: Path) -> None:
+    gasto = _gasto("15.50").model_copy(
+        update={"descripcion": "=HYPERLINK(1)", "subcategoria": "@SUM(A1)"}
+    )
+    ruta = exportar_csv([gasto], tmp_path / "gastos.csv")
+
+    with ruta.open(encoding="utf-8", newline="") as f:
+        fila = next(iter(csv.DictReader(f)))
+    assert fila["descripcion"] == "'=HYPERLINK(1)"
+    assert fila["subcategoria"] == "'@SUM(A1)"
+    assert fila["monto"] == "15.50"

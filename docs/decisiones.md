@@ -425,6 +425,14 @@ después restaurado, ni un `.txt` con el texto de un PDF. Desde esta fecha:
   Comprobación: `pre-commit run privacidad --all-files` dice `Passed`. El hook
   revisa el historial de `HEAD` (`PRIVACIDAD_REFS=HEAD`) para que una rama local
   de otra tarea no frene esta; CI revisa todas las ramas y tags.
+- **Lista blanca de extensiones** (22-nov-2026). La tupla `DATOS` solo frena
+  los formatos que alguien anotó, y un `.docx`, un `.7z` o un archivo sin
+  extensión con montos pasaban. Ahora todo archivo versionado tiene que tener una
+  extensión de `EXTENSIONES_VERSIONABLES`, un nombre de `NOMBRES_VERSIONABLES`
+  (`Dockerfile`, `.gitignore`…) o ser uno de los sintéticos de siempre
+  (`tests/fixtures/estados/*.csv|*.pdf`, `pares_verdaderos.csv`, `cruce-*.txt`).
+  Agregar una extensión es editar esa lista en la PR. Solo mira el árbol actual:
+  el historial lo cubre la revisión por contenido de arriba.
 
 **Límites.** `git commit --no-verify` y `git push --no-verify` se saltan el
 hook; CI lo ataja después, ya publicado. Las imágenes de `docs/img/`, las
