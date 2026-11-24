@@ -383,6 +383,20 @@ entre leer y escribir y pares rotos que la auditoría no veía.
   Unirlas exige tocar `reglas.py`. Lo que pase entre las dos lo frenan los
   índices únicos, y la CLI lo informa sin guardar nada.
 
+### PDF de Pichincha (24-nov-2026)
+
+El diseño del parser se aprobó el 14-nov; el 24-nov Demian decidió dos cosas más:
+
+- **El día de corte compartido no es un solape.** El resumen de Pichincha puede contar movimientos de las dos fechas de corte, así que el periodo va de un corte al otro con los dos días adentro, y dos estados seguidos comparten un día. `verificacion.py` no lo toma como solape, sigue mirando la continuidad del saldo a través de ese día y rechaza el segundo estado si trae el mismo movimiento (fecha, monto y descripción) que el primero ese día. Alternativa descartada: no tocar la verificación, con lo que cada estado de Pichincha después del primero se rechazaría por solape.
+- **`--tabla` incluye los PDF.** Se cambió solo `tabla()` de `scripts/estado_sintetico.py`; los fixtures no se tocaron.
+
+Y lo que salió de implementarlo:
+
+- **Columnas por encabezado, con su ancho medido.** Una columna va del fin del rótulo de la izquierda al inicio del de la derecha, y un texto tiene que caber entero en una sola. Con solo la x de inicio, la descripción (alineada a la izquierda bajo un rótulo centrado) y los montos (alineados a la derecha) caerían en la columna equivocada. El costo: una descripción muy corta puede caber en dos columnas y se rechaza.
+- **Solo `Tj`, en WinAnsi, sin `TJ` ni espaciado.** Es lo que escribe el banco; cualquier otra cosa rechaza el PDF como ilegible en vez de adivinar el ancho de un texto.
+- **El número de cuenta sale de `CUENTAS_LOCALES`** (`SecretStr` en `config.py`): ningún mensaje de error copia el número, ni del PDF ni del `.env`.
+- **pypdf es un extra (`[pdf]`)**, no una dependencia: el bot y la Mini App no lo necesitan.
+
 ## Privacidad
 
 El repo es público. La base de datos, los exports y el `.env` están en

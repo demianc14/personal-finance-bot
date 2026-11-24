@@ -6,6 +6,7 @@ from decimal import Decimal
 from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from family_expense_bot.conciliacion.bancos import es_etiqueta_de_cuenta
 from family_expense_bot.extraction.gemini import MODELO_POR_DEFECTO
 
 
@@ -30,6 +31,15 @@ class Settings(BaseSettings):
 
     Va en `.env` por la misma razón que los IDs: es un dato personal y el repo
     es público. Vacío = nadie tiene presupuesto.
+    """
+
+    cuentas_locales: SecretStr = SecretStr("")
+    """Número de cuenta → etiqueta, por banco: `banco:número:etiqueta,...`.
+
+    Lo usa el PDF, que trae el número de cuenta impreso: se compara entre páginas
+    y se cambia por la etiqueta, que es lo único que se guarda. Va en `.env` y no
+    en `config/`: el número no entra al repo, ni a la base, ni a un mensaje.
+    Es `SecretStr` para que tampoco salga en un repr o un traceback.
     """
 
     app_url: str = ""
@@ -108,3 +118,36 @@ class Settings(BaseSettings):
                 raise ValueError(f"INGRESOS_MENSUALES: {rol} aparece dos veces")
             ingresos[rol] = monto
         return ingresos
+
+    @property
+    def mapa_cuentas(self) -> dict[str, dict[str, str]]:
+        """Banco → (número de cuenta → etiqueta). Los mensajes de error nunca copian el número."""
+        mapa: dict[str, dict[str, str]] = {}
+        partes = self.cuentas_locales.get_secret_value().split(",")
+        for posicion, parte in enumerate(partes, start=1):
+            if not parte.strip():
+                continue
+            campos = [c.strip() for c in parte.split(":")]
+            if len(campos) != 3 or not all(campos):
+                raise ValueError(
+                    f"CUENTAS_LOCALES: la entrada {posicion} no tiene la forma "
+                    "banco:número:etiqueta"
+                )
+            banco, numero, etiqueta = campos[0].lower(), campos[1], campos[2]
+            if not numero.isascii() or not numero.isdigit():
+                raise ValueError(
+                    f"CUENTAS_LOCALES: en la entrada {posicion}, el número va con solo dígitos"
+                )
+            if not es_etiqueta_de_cuenta(etiqueta):
+                raise ValueError(
+                    f"CUENTAS_LOCALES: la etiqueta de la entrada {posicion} no es válida: "
+                    "minúsculas, hasta 40 caracteres y sin el número de cuenta"
+                )
+            del_banco = mapa.setdefault(banco, {})
+            if numero in del_banco:
+                raise ValueError(
+                    f"CUENTAS_LOCALES: la entrada {posicion} repite una cuenta de {banco}: "
+                    "aparece dos veces"
+                )
+            del_banco[numero] = etiqueta
+        return mapa

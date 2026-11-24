@@ -23,6 +23,21 @@
 #                   mayúsculas; `signo` (sale o entra) es opcional. Si ninguna
 #                   coincide: lo que sale es debito y lo que entra, credito.
 #
+# bancos_pdf: los bancos que exportan PDF con texto (G1b). Por banco, además de
+# nombre, cuentas y tipos (igual que arriba):
+#   encabezados     rótulo exacto de cada columna del detalle. La x de cada
+#                   columna se lee del rótulo en cada página, no se fija acá.
+#   resumen         rótulo exacto de cada dato de la página 1: cortes, saldos,
+#                   créditos y débitos (con su conteo entre paréntesis) e interés.
+#   formato_corte   formato de strptime de las fechas de corte, con año.
+#   meses           abreviatura de cada mes en el detalle, de enero a diciembre.
+#                   El año sale del periodo, nunca se deduce de otra cosa.
+#   rotulo_cuenta   lo que va antes del número de cuenta. El número se compara
+#                   entre páginas y se cambia por su etiqueta con CUENTAS_LOCALES
+#                   del .env: nunca se guarda ni va al repo.
+#   titulo          el título de cada página; una página con solo esto y su pie
+#                   es la página vacía del final.
+#
 # palabras_genericas (una lista para todos los bancos): palabras que no
 # distinguen un comercio de otro. Una palabra en común solo desempata entre dos
 # candidatos del cruce si NO está en esta lista. La regla de cruce por
@@ -35,8 +50,9 @@
 # ("para", "quito", "compra online"). No encenderla sin una medición nueva
 # (docs/conciliacion.md).
 #
-# Los dos bancos de abajo son inventados: los usan los tests y
-# scripts/estado_sintetico.py. El banco real entra cuando Demian responda G0.
+# Los dos bancos de `bancos` son inventados: los usan los tests y
+# scripts/estado_sintetico.py. Pichincha (en `bancos_pdf`) es real: G0 dijo que
+# solo exporta PDF.
 
 tope_bytes: 1048576 # 1 MiB; un estado mensual en CSV pesa unos pocos KB
 tope_filas: 2000 # movimientos por estado; uno mensual trae decenas
@@ -114,6 +130,39 @@ bancos:
     tipos:
       - tipo: comision
         contiene: [comision, mantenimiento de cuenta]
+        signo: sale
+      - tipo: interes
+        contiene: [interes, intereses]
+
+bancos_pdf:
+  # El formato se midió una vez sobre un estado real, en local, sin copiar su
+  # contenido; los tests corren contra PDF sintéticos (docs/conciliacion.md).
+  pichincha:
+    nombre: Banco Pichincha
+    cuentas: [ahorros]
+    encabezados:
+      fecha: FECHA
+      oficina: OFIC.
+      documento: N.DOC.
+      descripcion: DESCRIPCION
+      debito: DEBITO
+      credito: CREDITO
+      saldo: SALDO
+    resumen:
+      ultimo_corte: FECHA ÚLTIMO CORTE (FACTURA)
+      este_corte: FECHA ESTE CORTE
+      saldo_anterior: SALDO ANTERIOR
+      creditos: DEPÓSITO / CRÉDITOS
+      debitos: CHEQUES / DÉBITOS
+      interes: INTERÉS PERIODO
+      saldo_final: SALDO ACTUAL
+    formato_corte: "%d-%m-%Y"
+    meses: [ene., feb., mar., abr., may., jun., jul., ago., sep., oct., nov., dic.]
+    rotulo_cuenta: CUENTA
+    titulo: ESTADO DE CUENTA
+    tipos:
+      - tipo: comision
+        contiene: [comision]
         signo: sale
       - tipo: interes
         contiene: [interes, intereses]

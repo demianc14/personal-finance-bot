@@ -17,7 +17,12 @@ from family_expense_bot.bot.envio import enviar
 from family_expense_bot.bot.handlers import Servicios, build_application, obtener_identidad
 from family_expense_bot.conciliacion.bancos import cargar_bancos
 from family_expense_bot.conciliacion.contrato import EstadoRechazado, plata
-from family_expense_bot.conciliacion.importar import guardar_revision, revisar_estado
+from family_expense_bot.conciliacion.importar import (
+    Revision,
+    guardar_revision,
+    revisar_estado,
+    revisar_pdf,
+)
 from family_expense_bot.conciliacion.ingesta import centavos_declarados
 from family_expense_bot.conciliacion.integridad import (
     IntegridadRota,
@@ -132,9 +137,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--importar-estado",
-        metavar="CSV",
-        help="Importa un estado de cuenta en CSV. Entra completo o no entra: si no cuadra, "
-        "dice por qué y no guarda nada. Requiere --banco, --cuenta, --desde y --hasta.",
+        metavar="ARCHIVO",
+        help="Importa un estado de cuenta en CSV o PDF. Entra completo o no entra: si no "
+        "cuadra, dice por qué y no guarda nada. Un CSV requiere --banco, --cuenta, --desde y "
+        "--hasta; un PDF solo --banco (el periodo y la cuenta salen del archivo y de "
+        "CUENTAS_LOCALES).",
     )
     parser.add_argument(
         "--banco", help="Con --importar-estado: clave del banco en config/bancos.yaml."
@@ -327,34 +334,54 @@ def _saldo(texto: str) -> int:
 def _importar_estado(
     parser: argparse.ArgumentParser, args: argparse.Namespace, settings: Settings
 ) -> None:
-    obligatorios = (args.banco, args.cuenta, args.desde, args.hasta)
-    if None in (*obligatorios, args.saldo_anterior, args.saldo_final):
-        parser.error(
-            "--importar-estado necesita --banco, --cuenta, --desde, --hasta, "
-            "--saldo-anterior y --saldo-final"
-        )
     bancos = cargar_bancos()
-    if args.banco not in bancos.bancos:
+    if args.banco is None or args.saldo_anterior is None or args.saldo_final is None:
+        parser.error("--importar-estado necesita --banco, --saldo-anterior y --saldo-final")
+    es_pdf = args.banco in bancos.bancos_pdf
+    if es_pdf and (args.cuenta, args.desde, args.hasta) != (None, None, None):
         parser.error(
-            f"No existe el banco {args.banco!r} en config/bancos.yaml; hay: "
-            f"{', '.join(sorted(bancos.bancos))}"
+            f"{args.banco} exporta PDF: el periodo sale del resumen y la cuenta de "
+            "CUENTAS_LOCALES, así que no van --cuenta, --desde ni --hasta"
+        )
+    if not es_pdf and None in (args.cuenta, args.desde, args.hasta):
+        parser.error("Un estado en CSV necesita también --cuenta, --desde y --hasta")
+    if not es_pdf and args.banco not in bancos.bancos:
+        todos = sorted([*bancos.bancos, *bancos.bancos_pdf])
+        parser.error(
+            f"No existe el banco {args.banco!r} en config/bancos.yaml; hay: {', '.join(todos)}"
         )
     try:
         repositorio = RepositorioEstados(crear_engine(settings.database_url))
     except EsquemaDesactualizado as e:
         raise SystemExit(f"No importo: {e}") from e
+    revision: Revision
     try:
-        revision = revisar_estado(
-            Path(args.importar_estado),
-            bancos.bancos[args.banco],
-            repositorio,
-            cuenta=args.cuenta,
-            desde=args.desde,
-            hasta=args.hasta,
-            topes=bancos.topes,
-            saldo_anterior_centavos=args.saldo_anterior,
-            saldo_final_centavos=args.saldo_final,
-        )
+        if es_pdf:
+            try:
+                cuentas = settings.mapa_cuentas.get(args.banco, {})
+            except ValueError as e:
+                raise SystemExit(f"No importo: {e}") from None
+            revision = revisar_pdf(
+                Path(args.importar_estado),
+                bancos.bancos_pdf[args.banco],
+                repositorio,
+                cuentas_locales=cuentas,
+                topes=bancos.topes,
+                saldo_anterior_centavos=args.saldo_anterior,
+                saldo_final_centavos=args.saldo_final,
+            )
+        else:
+            revision = revisar_estado(
+                Path(args.importar_estado),
+                bancos.bancos[args.banco],
+                repositorio,
+                cuenta=args.cuenta,
+                desde=args.desde,
+                hasta=args.hasta,
+                topes=bancos.topes,
+                saldo_anterior_centavos=args.saldo_anterior,
+                saldo_final_centavos=args.saldo_final,
+            )
     except EstadoRechazado as e:
         _rechazado(e)
     # El resumen va siempre antes de guardar: sin --confirmar no se escribe nada.

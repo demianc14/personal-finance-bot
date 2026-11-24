@@ -237,6 +237,7 @@ src/family_expense_bot/
     contrato.py          # EstadoLeido, MovimientoLeido, Problema, EstadoRechazado
     bancos.py            # carga de config/bancos.yaml y reglas de movimientos.tipo
     ingesta.py           # CSV del banco → contrato Pydantic (Excel espera a G0)
+    pdf.py               # PDF de Pichincha → contrato Pydantic (pypdf, extra [pdf]); sin LLM
     verificacion.py      # invariante de saldo, saldo corrido, fechas, duplicados, continuidad
     importar.py          # leer + verificar + guardar todo o nada
     reglas.py            # reglas de cruce movimiento ↔ gasto, en orden y con nombre (--conciliar)
@@ -247,7 +248,7 @@ src/family_expense_bot/
   config.py
   cli.py
 config/categories.yaml   # taxonomía, fuente de verdad
-config/bancos.yaml       # formato de cada banco: columnas, fecha, decimal, signo, reglas de tipo
+config/bancos.yaml       # formato de cada banco (CSV y PDF): columnas o encabezados, fecha, reglas de tipo
 sql/vistas.sql           # (Fase G) cobertura, no registrados, recurrentes, costo del banco
 powerbi/                 # (Fase G) .pbix y CSV, solo con datos sintéticos
 evals/                   # mensajes.yaml (sintético) y corridas/ guardadas

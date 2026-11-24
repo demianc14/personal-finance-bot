@@ -358,7 +358,8 @@ def test_la_cli_con_confirmar_rechaza_una_cuenta_desconocida(
 @pytest.mark.parametrize(
     ("argumentos", "mensaje"),
     [
-        (("--banco", "banco_sintetico"), "--importar-estado necesita --banco, --cuenta, --desde"),
+        (("--banco", "banco_sintetico"), "--importar-estado necesita --banco, --saldo-anterior"),
+        (("--banco", "banco_sintetico", *SALDOS), "CSV necesita también --cuenta, --desde"),
         # Los saldos son obligatorios aunque el banco traiga columna de saldo.
         ((*ARGUMENTOS, *PERIODO), "--saldo-anterior y --saldo-final"),
         ((*ARGUMENTOS, *PERIODO, "--saldo-anterior", "1000"), "--saldo-anterior y --saldo-final"),
@@ -366,8 +367,12 @@ def test_la_cli_con_confirmar_rechaza_una_cuenta_desconocida(
         ((*ARGUMENTOS, "--desde", "01/03/2026", "--hasta", "2026-03-31", *SALDOS), "--desde"),
         ((*ARGUMENTOS, *PERIODO, "--saldo-final", "1,234.05"), "'1,234.05' no es un saldo"),
         (
-            ("--banco", "pichincha", "--cuenta", "ahorros", *PERIODO, *SALDOS),
-            "No existe el banco 'pichincha' en config/bancos.yaml",
+            ("--banco", "banco_inventado", "--cuenta", "ahorros", *PERIODO, *SALDOS),
+            "No existe el banco 'banco_inventado' en config/bancos.yaml",
+        ),
+        (
+            ("--banco", "pichincha", "--cuenta", "ahorros", *SALDOS),
+            "pichincha exporta PDF: el periodo sale del resumen",
         ),
     ],
 )
@@ -384,4 +389,45 @@ def test_la_cli_explica_los_argumentos_que_faltan_o_estan_mal(
         _cli(monkeypatch, "--importar-estado", str(ruta), *argumentos)
     assert salida.value.code == 2
     assert mensaje in capsys.readouterr().err
+    assert _contar(base) == (0, 0)
+
+
+# --- PDF por la CLI ---
+
+PDF = Path(__file__).resolve().parent / "fixtures" / "estados" / "pichincha.pdf"
+SALDOS_PDF = ("--saldo-anterior", "523.10", "--saldo-final", "436.55")
+
+
+def test_la_cli_importa_un_pdf_con_la_cuenta_del_mapa_local(
+    base: Engine, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("CUENTAS_LOCALES", "pichincha:9900000001:ahorros")
+    _cli(monkeypatch, "--importar-estado", str(PDF), "--banco", "pichincha", *SALDOS_PDF)
+    salida = capsys.readouterr().out
+    assert salida.startswith("Estado a importar: pichincha/ahorros, 2026-10-02 a 2026-11-02.\n")
+    assert "No se guardó nada" in salida
+    assert _contar(base) == (0, 0)
+    _cli(
+        monkeypatch,
+        "--importar-estado",
+        str(PDF),
+        "--banco",
+        "pichincha",
+        *SALDOS_PDF,
+        "--confirmar",
+    )
+    salida = capsys.readouterr().out
+    assert "Estado importado (#1)." in salida
+    assert "9900000001" not in salida
+    assert _contar(base) == (1, 17)
+
+
+def test_la_cli_rechaza_un_pdf_sin_la_cuenta_en_el_mapa(
+    base: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("CUENTAS_LOCALES", raising=False)
+    with pytest.raises(SystemExit) as salida:
+        _cli(monkeypatch, "--importar-estado", str(PDF), "--banco", "pichincha", *SALDOS_PDF)
+    assert "CUENTAS_LOCALES" in str(salida.value.code)
+    assert "9900000001" not in str(salida.value.code)
     assert _contar(base) == (0, 0)

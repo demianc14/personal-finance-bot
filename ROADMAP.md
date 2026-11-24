@@ -38,7 +38,7 @@ El repo cuenta una sola historia de producto: **captura verificada → conciliac
 - **Cruce: ¿las reglas recuerdan un par anulado a mano?** Hoy no: tras `--anular-par`, el siguiente `--conciliar` puede volver a unir el mismo movimiento con el mismo gasto. Recordarlo pide cambiar `reglas.py`.
 - **Cruce: `CLAUDE.md` todavía describe las tres reglas "en orden".** Es un principio no negociable y no se tocó: dice "monto exacto y misma fecha, monto exacto a ±3 días, y monto exacto con descripción parecida", y hoy las dos primeras se deciden juntas y la tercera está apagada.
 - **G0 (fuentes de la conciliación):** Pichincha exporta solo PDF con texto; Diners, PDF y quizás CSV (lo verifica Demian). Faltan desde qué mes hay estados, el porcentaje en efectivo y dónde corre Power BI.
-- **G1b (PDF de Pichincha):** diseño aprobado el 14-nov y fixtures sintéticos hechos. El parser espera a que termine el cambio de la ingesta: la anulación en cascada y el solape en transacción ya están; falta el titular de la cuenta.
+- **G1b (PDF de Pichincha):** parser hecho (rama `fase-g1b-parser-pdf`). El titular de la cuenta no se lee ni se guarda. Falta decidir cómo entra un estado con interés distinto de cero (hoy se rechaza).
 - **Decisión de rumbo del 10-nov:** el repo se renombra, entra la conciliación de estados de cuenta (Fase G) y la Fase F sale de este repo.
 
 ### Operación
@@ -141,8 +141,8 @@ Limitación conocida (decidida el 12-nov): la conciliación es **uno a uno y sol
 ### G1b. PDF (G0: Pichincha solo exporta PDF)
 
 - [x] PDF sintéticos con la forma del real, reproducibles byte a byte (`scripts/estado_sintetico.py`, `tests/test_pdf_sintetico.py`); el contraste con el real fue una corrida local única (`docs/conciliacion.md`).
-- [ ] Parser con pypdf, después del cambio de la ingesta.
-- [ ] Texto con una librería de PDF y reglas; el LLM solo si las reglas no alcanzan y con la misma verificación (cada monto aparece literal en la página y el saldo cuadra).
+- [x] Parser con pypdf (`conciliacion/pdf.py`, rama `fase-g1b-parser-pdf`): columnas por encabezado, rechazo completo con página y fila, cuadre contra el resumen y el día de corte compartido entre dos estados.
+- [x] Texto con una librería de PDF y reglas, sin LLM: las reglas alcanzaron con los fixtures.
 
 ### G2. Conciliación, SQL y Power BI
 

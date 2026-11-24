@@ -65,23 +65,14 @@ class ReglaTipo(BaseModel):
         return v
 
 
-class Banco(BaseModel):
+class _BancoBase(BaseModel):
+    """Lo que comparten un banco en CSV y uno en PDF."""
+
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     clave: str = ""
     """La clave del banco en el yaml; la pone `cargar_bancos`."""
     nombre: str
-    codificacion: Literal["utf-8", "latin-1", "cp1252"] = "utf-8"
-    delimitador: str = Field(default=",", min_length=1, max_length=1)
-    filas_a_saltar: int = Field(default=0, ge=0)
-    """Líneas antes del encabezado (título, nombre del titular)."""
-    columnas: Columnas
-    formato_fecha: str
-    """Formato de `strptime`, con día, mes y año de cuatro dígitos."""
-    decimal: Literal["punto", "coma"]
-    signo: Literal["negativo_sale", "positivo_sale"] = "negativo_sale"
-    """Cómo escribe el banco la columna `monto` (y los saldos). `positivo_sale`
-    es una tarjeta: el consumo va en positivo y el saldo es lo que se debe."""
     tipos: list[ReglaTipo] = []
     """En orden: gana la primera que coincide."""
     cuentas: list[str] = Field(min_length=1)
@@ -101,6 +92,22 @@ class Banco(BaseModel):
             raise ValueError("`cuentas` trae una cuenta repetida")
         return v
 
+
+class Banco(_BancoBase):
+    """Un banco que exporta CSV."""
+
+    codificacion: Literal["utf-8", "latin-1", "cp1252"] = "utf-8"
+    delimitador: str = Field(default=",", min_length=1, max_length=1)
+    filas_a_saltar: int = Field(default=0, ge=0)
+    """Líneas antes del encabezado (título, nombre del titular)."""
+    columnas: Columnas
+    formato_fecha: str
+    """Formato de `strptime`, con día, mes y año de cuatro dígitos."""
+    decimal: Literal["punto", "coma"]
+    signo: Literal["negativo_sale", "positivo_sale"] = "negativo_sale"
+    """Cómo escribe el banco la columna `monto` (y los saldos). `positivo_sale`
+    es una tarjeta: el consumo va en positivo y el saldo es lo que se debe."""
+
     @field_validator("formato_fecha")
     @classmethod
     def _fecha_completa(cls, v: str) -> str:
@@ -113,6 +120,72 @@ class Banco(BaseModel):
         if self.columnas.monto is None and self.signo != "negativo_sale":
             raise ValueError("`signo` solo aplica a un banco con columna `monto`")
         return self
+
+
+class EncabezadosPdf(BaseModel):
+    """El rótulo exacto de cada columna del detalle, como lo escribe el banco."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    fecha: str
+    oficina: str
+    documento: str
+    descripcion: str
+    debito: str
+    credito: str
+    saldo: str
+
+    @model_validator(mode="after")
+    def _distintos(self) -> Self:
+        rotulos = list(self.model_dump().values())
+        if len(rotulos) != len(set(rotulos)) or any(not r.strip() for r in rotulos):
+            raise ValueError("los encabezados no pueden repetirse ni ir vacíos")
+        return self
+
+
+class ResumenPdf(BaseModel):
+    """El rótulo exacto de cada dato del resumen (página 1)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    ultimo_corte: str
+    este_corte: str
+    saldo_anterior: str
+    creditos: str
+    debitos: str
+    interes: str
+    saldo_final: str
+
+
+class BancoPdf(_BancoBase):
+    """Un banco que exporta un PDF con texto: resumen en la página 1 y el detalle después."""
+
+    encabezados: EncabezadosPdf
+    resumen: ResumenPdf
+    formato_corte: str
+    """Formato de `strptime` de las fechas de corte del resumen, con año."""
+    meses: list[str] = Field(min_length=12, max_length=12)
+    """Cómo abrevia el banco cada mes en el detalle, de enero a diciembre."""
+    rotulo_cuenta: str
+    """Lo que va antes del número de cuenta ("CUENTA"). El número se compara entre
+    páginas y se cambia por su etiqueta: nunca se guarda."""
+    titulo: str
+    """El título que el banco repite en cada página; una página con solo esto y su pie
+    es la página vacía del final."""
+
+    @field_validator("formato_corte")
+    @classmethod
+    def _corte_completo(cls, v: str) -> str:
+        if not all(parte in v for parte in ("%d", "%m", "%Y")):
+            raise ValueError("formato_corte necesita %d, %m y %Y (año de cuatro dígitos)")
+        return v
+
+    @field_validator("meses")
+    @classmethod
+    def _meses_distintos(cls, v: list[str]) -> list[str]:
+        if len(set(v)) != 12 or any(not m.strip() or " " in m for m in v):
+            raise ValueError("`meses` son doce abreviaturas distintas, sin espacios")
+        return v
 
 
 class Topes(BaseModel):
@@ -139,6 +212,8 @@ class Bancos(BaseModel):
     """En unidades enteras (dólares). Un movimiento más grande se rechaza: es un
     signo o un separador mal leído antes que un gasto real."""
     bancos: dict[str, Banco]
+    bancos_pdf: dict[str, BancoPdf] = {}
+    """Los bancos que exportan PDF. Una clave no puede estar en las dos listas."""
     palabras_genericas: list[str] = []
     """Palabras que no distinguen un comercio de otro ("compra", "pago"). Las usa
     la regla de cruce por descripción: una sola palabra en común no alcanza si es
@@ -176,15 +251,24 @@ class Bancos(BaseModel):
         """Cada banco conoce su clave, que es la que se guarda en la base."""
         if not isinstance(datos, dict) or not isinstance(datos.get("bancos"), dict):
             return datos
-        bancos = {}
-        for clave, banco in datos["bancos"].items():
-            if not re.fullmatch(r"[a-z][a-z0-9_]{0,39}", str(clave)):
-                raise ValueError(
-                    f"la clave de banco {clave!r} debe ir en minúsculas, sin espacios "
-                    "y con 40 caracteres como máximo"
-                )
-            bancos[clave] = {**banco, "clave": clave} if isinstance(banco, dict) else banco
-        return {**datos, "bancos": bancos}
+        datos = dict(datos)
+        vistas: set[str] = set()
+        for lista in ("bancos", "bancos_pdf"):
+            if not isinstance(datos.get(lista), dict):
+                continue
+            bancos = {}
+            for clave, banco in datos[lista].items():
+                if not re.fullmatch(r"[a-z][a-z0-9_]{0,39}", str(clave)):
+                    raise ValueError(
+                        f"la clave de banco {clave!r} debe ir en minúsculas, sin espacios "
+                        "y con 40 caracteres como máximo"
+                    )
+                if clave in vistas:
+                    raise ValueError(f"el banco {clave!r} está en `bancos` y en `bancos_pdf`")
+                vistas.add(clave)
+                bancos[clave] = {**banco, "clave": clave} if isinstance(banco, dict) else banco
+            datos[lista] = bancos
+        return datos
 
 
 def cargar_bancos(ruta: Path | None = None) -> Bancos:

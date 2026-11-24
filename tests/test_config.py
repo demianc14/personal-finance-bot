@@ -130,3 +130,43 @@ def test_app_url_vacia_o_https(monkeypatch: pytest.MonkeyPatch, crudo: str, espe
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:secreto")
     monkeypatch.setenv("APP_URL", crudo)
     assert Settings(_env_file=None).app_url == esperado  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize(
+    ("crudo", "esperado"),
+    [
+        ("", {}),
+        ("pichincha:9900000001:ahorros", {"pichincha": {"9900000001": "ahorros"}}),
+        (
+            " pichincha : 9900000001 : ahorros , pichincha:9900000002:corriente,",
+            {"pichincha": {"9900000001": "ahorros", "9900000002": "corriente"}},
+        ),
+    ],
+)
+def test_cuentas_locales(
+    monkeypatch: pytest.MonkeyPatch, crudo: str, esperado: dict[str, dict[str, str]]
+) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:x")
+    monkeypatch.setenv("CUENTAS_LOCALES", crudo)
+    assert Settings(_env_file=None).mapa_cuentas == esperado  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize(
+    ("crudo", "error"),
+    [
+        ("pichincha:9900000001", "banco:número:etiqueta"),
+        ("pichincha:99-00:ahorros", "solo dígitos"),
+        ("pichincha:9900000001:Ahorros 1234", "etiqueta"),
+        ("pichincha:9900000001:ahorros,pichincha:9900000001:otra", "dos veces"),
+    ],
+)
+def test_cuentas_locales_mal_formadas_no_muestran_el_numero(
+    monkeypatch: pytest.MonkeyPatch, crudo: str, error: str
+) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:x")
+    monkeypatch.setenv("CUENTAS_LOCALES", crudo)
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    with pytest.raises(ValueError, match=error) as e:
+        _ = settings.mapa_cuentas
+    assert "9900000001" not in str(e.value)
+    assert "9900000001" not in repr(settings)

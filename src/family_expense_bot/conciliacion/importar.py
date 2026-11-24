@@ -6,6 +6,7 @@ de escritura tomado y guarda. La segunda verificación no es de más: entre los 
 pasos otro proceso pudo importar un periodo que se cruza.
 """
 
+from collections.abc import Mapping
 from datetime import date
 from pathlib import Path
 from typing import get_args
@@ -13,7 +14,7 @@ from typing import get_args
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.exc import IntegrityError
 
-from family_expense_bot.conciliacion.bancos import Banco, Topes
+from family_expense_bot.conciliacion.bancos import Banco, BancoPdf, Topes
 from family_expense_bot.conciliacion.contrato import (
     EstadoLeido,
     EstadoRechazado,
@@ -141,6 +142,54 @@ def importar_estado(
         cuenta=cuenta,
         desde=desde,
         hasta=hasta,
+        topes=topes,
+        saldo_anterior_centavos=saldo_anterior_centavos,
+        saldo_final_centavos=saldo_final_centavos,
+    )
+    return guardar_revision(revision, repositorio)
+
+
+def revisar_pdf(
+    ruta: Path,
+    banco: BancoPdf,
+    repositorio: RepositorioEstados,
+    *,
+    cuentas_locales: Mapping[str, str],
+    topes: Topes,
+    saldo_anterior_centavos: int,
+    saldo_final_centavos: int,
+) -> Revision:
+    """Como `revisar_estado`, para un PDF: el periodo y la cuenta salen del propio archivo."""
+    from family_expense_bot.conciliacion.pdf import leer_pdf
+
+    estado = leer_pdf(
+        ruta,
+        banco,
+        cuentas_locales=cuentas_locales,
+        topes=topes,
+        saldo_anterior_centavos=saldo_anterior_centavos,
+        saldo_final_centavos=saldo_final_centavos,
+    )
+    veredicto = _exigir(verificar(estado, repositorio.vigentes()))
+    return Revision(estado=estado, avisos=veredicto.avisos)
+
+
+def importar_pdf(
+    ruta: Path,
+    banco: BancoPdf,
+    repositorio: RepositorioEstados,
+    *,
+    cuentas_locales: Mapping[str, str],
+    topes: Topes,
+    saldo_anterior_centavos: int,
+    saldo_final_centavos: int,
+) -> Importacion:
+    """Revisar y guardar un PDF de una vez: para scripts y tests con datos sintéticos."""
+    revision = revisar_pdf(
+        ruta,
+        banco,
+        repositorio,
+        cuentas_locales=cuentas_locales,
         topes=topes,
         saldo_anterior_centavos=saldo_anterior_centavos,
         saldo_final_centavos=saldo_final_centavos,

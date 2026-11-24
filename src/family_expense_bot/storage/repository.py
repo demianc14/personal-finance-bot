@@ -18,13 +18,18 @@ from sqlalchemy import (
     create_engine,
     event,
     inspect,
+    or_,
     select,
     text,
     update,
 )
 from sqlalchemy.orm import Session, sessionmaker
 
-from family_expense_bot.conciliacion.contrato import EstadoLeido, EstadoVigente
+from family_expense_bot.conciliacion.contrato import (
+    EstadoLeido,
+    EstadoVigente,
+    MovimientoDeCorte,
+)
 from family_expense_bot.extraction.schema import GastoExtraido
 from family_expense_bot.storage.dinero import a_centavos, a_decimal
 from family_expense_bot.storage.models import (
@@ -598,7 +603,33 @@ class RepositorioEstados:
             .where(EstadoCuenta.anulado_en.is_(None))
             .order_by(EstadoCuenta.periodo_desde, EstadoCuenta.id)
         )
-        return [RepositorioEstados._vigente(fila) for fila in sesion.scalars(consulta)]
+        en_los_cortes = (
+            select(
+                Movimiento.estado_id,
+                Movimiento.fecha,
+                Movimiento.monto_centavos,
+                Movimiento.descripcion,
+            )
+            .join(EstadoCuenta, EstadoCuenta.id == Movimiento.estado_id)
+            .where(
+                EstadoCuenta.anulado_en.is_(None),
+                Movimiento.anulado_en.is_(None),
+                or_(
+                    Movimiento.fecha == EstadoCuenta.periodo_desde,
+                    Movimiento.fecha == EstadoCuenta.periodo_hasta,
+                ),
+            )
+            .order_by(Movimiento.estado_id, Movimiento.linea)
+        )
+        cortes: dict[int, list[MovimientoDeCorte]] = {}
+        for estado_id, fecha, monto, descripcion in sesion.execute(en_los_cortes):
+            cortes.setdefault(estado_id, []).append(
+                MovimientoDeCorte(fecha=fecha, monto_centavos=monto, descripcion=descripcion)
+            )
+        return [
+            RepositorioEstados._vigente(fila, cortes.get(fila.id, ()))
+            for fila in sesion.scalars(consulta)
+        ]
 
     def guardar(
         self, estado: EstadoLeido, *, revisar: Callable[[list[EstadoVigente]], None]
@@ -668,8 +699,11 @@ class RepositorioEstados:
             return True
 
     @staticmethod
-    def _vigente(fila: EstadoCuenta) -> EstadoVigente:
+    def _vigente(
+        fila: EstadoCuenta, de_los_cortes: Sequence[MovimientoDeCorte] = ()
+    ) -> EstadoVigente:
         return EstadoVigente(
+            de_los_cortes=tuple(de_los_cortes),
             id=fila.id,
             banco=fila.banco,
             cuenta=fila.cuenta,

@@ -21,6 +21,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Leer el PDF de Pichincha (G1b): el banco solo exporta PDF. Puro Python, sin
+# dependencias propias; solo se importa al leer un PDF.
+pdf = ["pypdf>=7.1,<8"]  # probado con 7.1.0
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.23",

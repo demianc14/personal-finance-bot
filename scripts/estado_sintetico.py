@@ -610,23 +610,44 @@ MAXIMO_MENSAJES = 3
 
 
 def tabla() -> str:
-    """Qué pasa con cada caso y con qué mensaje exacto, en Markdown."""
+    """Qué pasa con cada caso, CSV y PDF, y con qué mensaje exacto, en Markdown."""
+    from family_expense_bot.conciliacion.importar import importar_pdf
+
     lineas = ["| Caso | Qué trae | Resultado | Mensaje exacto |", "|---|---|---|---|"]
+
+    def fila(nombre: str, que: str, resultado: Importacion | EstadoRechazado) -> None:
+        if isinstance(resultado, EstadoRechazado):
+            veredicto = "Rechazado"
+            mensajes = [p.mensaje for p in resultado.problemas]
+        else:
+            veredicto = "Entra con aviso" if resultado.avisos else "Entra"
+            mensajes = list(resultado.avisos) or [f"{resultado.movimientos} movimientos"]
+        de_mas = len(mensajes) - MAXIMO_MENSAJES
+        if de_mas > 0:
+            mensajes = [*mensajes[:MAXIMO_MENSAJES], f"(y {de_mas} más)"]
+        celda = "<br>".join(mensajes).replace("|", "\\|")
+        lineas.append(f"| `{nombre}` | {que} | {veredicto} | {celda} |")
+
     with tempfile.TemporaryDirectory() as temporal:
         preparar(Path(temporal), con_enorme=True)
         for caso in CASOS:
-            resultado = correr(caso, Path(temporal))
-            if isinstance(resultado, EstadoRechazado):
-                veredicto = "Rechazado"
-                mensajes = [p.mensaje for p in resultado.problemas]
-            else:
-                veredicto = "Entra con aviso" if resultado.avisos else "Entra"
-                mensajes = list(resultado.avisos) or [f"{resultado.movimientos} movimientos"]
-            de_mas = len(mensajes) - MAXIMO_MENSAJES
-            if de_mas > 0:
-                mensajes = [*mensajes[:MAXIMO_MENSAJES], f"(y {de_mas} más)"]
-            celda = "<br>".join(mensajes).replace("|", "\\|")
-            lineas.append(f"| `{caso.nombre}` | {caso.que} | {veredicto} | {celda} |")
+            fila(caso.nombre, caso.que, correr(caso, Path(temporal)))
+        bancos = cargar_bancos()
+        for caso_pdf in CASOS_PDF:
+            resultado: Importacion | EstadoRechazado
+            try:
+                resultado = importar_pdf(
+                    Path(temporal) / caso_pdf.archivo,
+                    bancos.bancos_pdf["pichincha"],
+                    RepositorioEstados(crear_engine("sqlite://")),
+                    cuentas_locales={_CUENTA: "ahorros"},
+                    topes=bancos.topes,
+                    saldo_anterior_centavos=caso_pdf.saldos[0],
+                    saldo_final_centavos=caso_pdf.saldos[1],
+                )
+            except EstadoRechazado as rechazo:
+                resultado = rechazo
+            fila(caso_pdf.nombre, caso_pdf.que, resultado)
     return "\n".join(lineas)
 
 

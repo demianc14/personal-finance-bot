@@ -17,7 +17,7 @@ Qué alcanza a ver, según lo que traiga el banco:
 from bisect import bisect_right
 from collections import defaultdict
 from collections.abc import Sequence
-from datetime import timedelta
+from datetime import date, timedelta
 
 from pydantic import BaseModel, ConfigDict
 
@@ -65,6 +65,7 @@ def verificar(estado: EstadoLeido, vigentes: Sequence[EstadoVigente] = ()) -> Ve
 
     rotas, avisos = _continuidad(estado, de_la_cuenta)
     problemas.extend(rotas)
+    problemas.extend(_corte_repetido(estado, de_la_cuenta))
     bloque = _bloque_duplicado(estado.movimientos)
     if bloque is not None:
         primero, segundo = bloque
@@ -171,8 +172,46 @@ def _periodos_solapados(estado: EstadoLeido, de_la_cuenta: list[EstadoVigente]) 
             f"({_periodo(v)}) de la misma cuenta.",
         )
         for v in de_la_cuenta
-        if v.periodo_desde <= estado.periodo_hasta and estado.periodo_desde <= v.periodo_hasta
+        if v.periodo_desde <= estado.periodo_hasta
+        and estado.periodo_desde <= v.periodo_hasta
+        and _dia_de_corte(estado, v) is None
     ]
+
+
+def _dia_de_corte(estado: EstadoLeido, otro: EstadoVigente) -> date | None:
+    """El día que comparten si uno empieza justo el día en que termina el otro, y nada más.
+
+    Un banco que cuenta el día de corte en los dos estados (Pichincha) deja dos
+    estados seguidos con un día en común. No es un solape: qué movimientos de ese
+    día van en cada uno lo dice el resumen de cada estado (decidido el 2026-11-24).
+    """
+    if otro.periodo_hasta == estado.periodo_desde and otro.periodo_desde < estado.periodo_desde:
+        return estado.periodo_desde
+    if estado.periodo_hasta == otro.periodo_desde and estado.periodo_desde < otro.periodo_desde:
+        return estado.periodo_hasta
+    return None
+
+
+def _corte_repetido(estado: EstadoLeido, de_la_cuenta: list[EstadoVigente]) -> list[Problema]:
+    """El mismo movimiento (fecha, monto y descripción) en el día de corte de dos estados."""
+    problemas = []
+    for v in de_la_cuenta:
+        dia = _dia_de_corte(estado, v)
+        if dia is None:
+            continue
+        del_otro = {(m.monto_centavos, m.descripcion) for m in v.de_los_cortes if m.fecha == dia}
+        for m in estado.movimientos:
+            if m.fecha == dia and (m.monto_centavos, m.descripcion) in del_otro:
+                problemas.append(
+                    Problema(
+                        codigo="corte_repetido",
+                        linea=m.linea,
+                        mensaje=f"Línea {m.linea}: el movimiento del {dia} por "
+                        f"{plata(m.monto_centavos)} ya está en el estado #{v.id} ({_periodo(v)}), "
+                        "que también cubre ese día de corte.",
+                    )
+                )
+    return problemas
 
 
 def _continuidad(
@@ -189,8 +228,17 @@ def _continuidad(
     problemas: list[Problema] = []
     avisos: list[str] = []
     un_dia = timedelta(days=1)
-    antes = [v for v in de_la_cuenta if v.periodo_hasta < estado.periodo_desde]
-    despues = [v for v in de_la_cuenta if v.periodo_desde > estado.periodo_hasta]
+    # Un vecino que comparte el día de corte también es contiguo: se mira su saldo.
+    antes = [
+        v
+        for v in de_la_cuenta
+        if v.periodo_hasta < estado.periodo_desde or _dia_de_corte(estado, v) == v.periodo_hasta
+    ]
+    despues = [
+        v
+        for v in de_la_cuenta
+        if v.periodo_desde > estado.periodo_hasta or _dia_de_corte(estado, v) == v.periodo_desde
+    ]
     if antes:
         v = max(antes, key=lambda e: (e.periodo_hasta, e.id))
         if v.periodo_hasta + un_dia < estado.periodo_desde:
