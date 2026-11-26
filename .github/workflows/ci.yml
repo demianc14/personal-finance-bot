@@ -21,7 +21,7 @@ jobs:
       - uses: actions/setup-node@v4 # sin node se saltan los tests de paridad con n8n
         with:
           node-version: 22
-      - run: pip install -e '.[dev]'
+      - run: pip install -e '.[dev,pdf]'
       - run: ruff check .
       - run: ruff format --check .
       - run: mypy

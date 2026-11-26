@@ -32,7 +32,10 @@ class Problema(BaseModel):
     codigo: str
     mensaje: str
     linea: int | None = None
-    """Línea del archivo, como la muestra un editor de texto."""
+    """Línea del archivo, como la muestra un editor de texto. En un PDF, el número
+    del movimiento en el detalle."""
+    pagina: int | None = None
+    """Página del PDF, si el problema es de una página."""
 
 
 class EstadoRechazado(ValueError):
@@ -96,8 +99,18 @@ class EstadoLeido(BaseModel):
         return -sum(m.monto_centavos for m in self.movimientos if m.monto_centavos < 0)
 
 
+class MovimientoDeCorte(BaseModel):
+    """Un movimiento vigente fechado en el primer o el último día de su estado."""
+
+    model_config = ConfigDict(frozen=True)
+
+    fecha: date
+    monto_centavos: int
+    descripcion: str
+
+
 class EstadoVigente(BaseModel):
-    """Un estado ya importado y sin anular, sin sus movimientos."""
+    """Un estado ya importado y sin anular. De sus movimientos solo trae los de las puntas."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -109,3 +122,7 @@ class EstadoVigente(BaseModel):
     saldo_anterior_centavos: int
     saldo_final_centavos: int
     hash_archivo: str
+    de_los_cortes: tuple[MovimientoDeCorte, ...] = ()
+    """Los movimientos del primer y el último día del periodo. Dos estados seguidos
+    de un banco que cuenta el día de corte en los dos lo comparten; con estos se
+    ve que un mismo movimiento no entre dos veces (`verificacion`)."""

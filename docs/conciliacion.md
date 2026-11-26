@@ -2,7 +2,7 @@
 
 [← README](../README.md) · [Decisiones](decisiones.md) · [Presupuesto](presupuesto.md) · [Calidad](calidad.md) · [Evaluación](evaluacion.md) · [Mini App](mini-app.md) · [n8n](../n8n/README.md)
 
-El bot sabe lo que le escribo; el banco sabe lo que de verdad salió. Esta parte cruza las dos fuentes. Hoy están hechas la **ingesta** (un estado de cuenta en CSV entra a la base completo y verificado, o no entra) y las **reglas de cruce** contra los gastos. Las vistas SQL, la lista "Sin registrar" y Power BI son lo siguiente en [`ROADMAP.md`](../ROADMAP.md).
+El bot sabe lo que le escribo; el banco sabe lo que de verdad salió. Esta parte cruza las dos fuentes. Hoy están hechas la **ingesta** (un estado de cuenta en CSV o en el PDF de Pichincha entra a la base completo y verificado, o no entra) y las **reglas de cruce** contra los gastos. Las vistas SQL, la lista "Sin registrar" y Power BI son lo siguiente en [`ROADMAP.md`](../ROADMAP.md).
 
 Todo lo de esta página se hizo con datos inventados. Ningún estado real entra al repo ni va a un LLM.
 
@@ -17,13 +17,31 @@ Todo lo de esta página se hizo con datos inventados. Ningún estado real entra 
 - Porcentaje que se paga en efectivo: pendiente de Demian.
 - Dónde corre Power BI: pendiente de Demian.
 
-Pichincha no exporta CSV ni Excel, así que entra la subfase del PDF (G1b en [`ROADMAP.md`](../ROADMAP.md)). Hasta que esté, `config/bancos.yaml` solo trae dos bancos inventados. Excel no se lee todavía: pide una dependencia nueva (`openpyxl`) y no se agrega hasta saber si hace falta.
+Pichincha no exporta CSV ni Excel, así que entró la subfase del PDF (G1b en [`ROADMAP.md`](../ROADMAP.md)): `config/bancos.yaml` trae a Pichincha en `bancos_pdf` y dos bancos inventados en CSV. Excel no se lee todavía: pide una dependencia nueva (`openpyxl`) y no se agrega hasta saber si hace falta.
 
-## PDF de Pichincha (G1b): fixtures, todavía sin parser
+## PDF de Pichincha (G1b)
 
-`scripts/estado_sintetico.py` genera 11 PDF sintéticos en `tests/fixtures/estados/`, con la forma del export de Pichincha. **Todavía no hay parser que los lea**: espera al último cambio de la ingesta (el titular de la cuenta) para no chocar con ese trabajo.
+```bash
+family-expense-bot --importar-estado estado.pdf --banco pichincha --saldo-anterior 523.10 --saldo-final 436.55
+```
 
-**Qué prueban y qué no.** Cuando exista el parser, estos fixtures lo prueban **contra nuestro generador, no contra el banco**. Que el generador se parezca al export real se comprobó **una sola vez, en local**, comparando la forma de un estado real con la del sintético (sin copiar su contenido; abajo están las diferencias). Ese contraste no está en los tests ni en el repo. Si el banco cambia el formato, los tests siguen pasando y solo una corrida nueva contra un estado real lo nota.
+Sin `--cuenta`, `--desde` ni `--hasta`: el periodo sale de los cortes del resumen y la cuenta, de `CUENTAS_LOCALES` en el `.env` (`pichincha:<número>:<etiqueta>`). Los saldos se siguen declarando a mano y tienen que ser los del resumen. Igual que con un CSV, sin `--confirmar` solo muestra el resumen. Leer un PDF necesita el extra `pdf` (`pip install -e '.[pdf]'`, que trae pypdf).
+
+**Cómo lee** (`conciliacion/pdf.py`, sin LLM). pypdf da cada `Tj` con su posición y su ancho (de los `/Widths` de la fuente). Las filas se arman con reglas fijas:
+
+- **Columnas por el nombre del encabezado** (`encabezados` en `config/bancos.yaml`), con su x leída en cada página. Una columna va desde donde termina el rótulo de su vecina izquierda hasta donde empieza el de la derecha. Un texto tiene que caber entero en una sola: si no cabe en ninguna o cabe en dos, el estado se rechaza.
+- **Cada fecha abre una fila.** Lo que está a su altura (±0,5 pt) es de esa fila, y cada columna lleva exactamente un texto.
+- **El dígito suelto del N.DOC.** se une solo si está en su columna, debajo de la fila y antes de la siguiente. Cualquier otro texto sin fecha rechaza el estado.
+- **El año sale del periodo.** La fecha trae día y mes (`03-oct.`); si no cae en exactamente un día del periodo, se rechaza.
+- **El número de cuenta** se compara entre páginas y se cambia por su etiqueta. No se guarda, no se hashea y no sale en ningún mensaje.
+
+**Qué rechaza**, siempre el estado completo y con la página y la fila en el mensaje: un texto fuera de columna; débito y crédito los dos mayores que cero o los dos en cero; un monto con coma o sin exactamente dos decimales; una fecha que no cae en el periodo; una página sin encabezado o sin pie ("Página N de M"); una numeración con huecos o repetida; un número de cuenta distinto entre páginas; un interés distinto de cero; saldos declarados que no son los del resumen; y un resumen cuyos conteos y totales de créditos y débitos no son los del detalle. Después corre la verificación de siempre (saldo corrido, invariante, solape, continuidad, cuenta del yaml), también con el candado tomado al guardar.
+
+**Día de corte.** El resumen decide: entra el estado cuyo detalle cuadra con él, aunque traiga movimientos en las dos fechas de corte. Por eso el periodo va de un corte al otro con los dos días adentro, y dos estados seguidos comparten el día de corte. Eso no cuenta como solape (decidido el 2026-11-24): la continuidad del saldo se mira igual, y si el mismo movimiento (fecha, monto y descripción) aparece ese día en los dos estados, el segundo se rechaza (`corte_repetido`).
+
+**Corrida con el real.** Una sola, local, contra el estado autorizado el 14-nov; su resultado está en la PR, y nada de su contenido entra al repo.
+
+**Los fixtures.** `scripts/estado_sintetico.py` genera 11 PDF sintéticos en `tests/fixtures/estados/`, con la forma del export de Pichincha; su resultado está en la [tabla de abajo](#qué-rechaza-y-con-qué-mensaje). Prueban el parser **contra nuestro generador, no contra el banco**. Que el generador se parezca al export real se comprobó **una sola vez, en local**, comparando la forma de un estado real con la del sintético (sin copiar su contenido; abajo están las diferencias). Ese contraste no está en los tests ni en el repo. Si el banco cambia el formato, los tests siguen pasando y solo una corrida nueva contra un estado real lo nota.
 
 | Archivo | Qué trae | Debería |
 |---|---|---|
@@ -39,7 +57,7 @@ Pichincha no exporta CSV ni Excel, así que entra la subfase del PDF (G1b en [`R
 | `pichincha_cruza_diciembre` | Periodo de diciembre a enero; cada fecha cae en un solo año | Entrar |
 | `pichincha_mes_fuera_del_periodo` | El mismo periodo con una fecha "15-jun.", que no cae en ninguno de los dos años | Rechazarse |
 
-La columna "Debería" está **anotada a mano, no medida**: sale de `CASOS_PDF` y la medirá el parser.
+La columna "Debería" está anotada a mano en `CASOS_PDF`; `tests/test_pdf_pichincha.py` comprueba que el parser hace eso con cada uno.
 
 **Decisiones de Demian para el parser** (14-nov):
 
@@ -314,12 +332,15 @@ Igual que la reparación: sin `--confirmar` muestra qué anularía y no cambia n
 - **La regla de la tarjeta cuenta movimientos, no montos.** Una tarjeta con más pagos y devoluciones que consumos en un mes se rechaza aunque esté bien; si pasa con el banco real, la regla se revisa.
 - **El archivo va del movimiento más viejo al más nuevo.** Un banco que exporte al revés rompe el saldo corrido; haría falta una opción en el yaml. Se queda así hasta ver el banco real (G0).
 - **No hay filas de totales al final.** Una fila "Total" se rechaza como fila a medio llenar. Se queda así hasta ver el banco real (G0).
-- **Solo CSV.** Pichincha exporta PDF (G0): su lectura es la subfase G1b, todavía sin código. Excel depende de lo que responda Diners.
+- **CSV y el PDF de Pichincha.** Excel depende de lo que responda Diners.
+- **El PDF se prueba contra nuestro generador.** Si el banco cambia el formato, los tests siguen pasando; solo una corrida contra un estado real lo nota.
+- **Una descripción muy corta en el PDF se rechaza.** Si cabe entera entre el fin de "N.DOC." y el inicio de "DESCRIPCION", cabe en dos columnas y no se adivina cuál es.
+- **Un estado con interés no entra** (el resumen trae `INTERÉS PERIODO` distinto de cero): falta decidir cómo se registra.
 - **Una fecha en mes/día que también sirve como día/mes no se nota en esa fila** (05/03 es 5 de marzo o 3 de mayo). El archivo se rechaza igual en cuanto una fila tiene día mayor a 12 o cae fuera del periodo.
 
 ## Qué rechaza y con qué mensaje
 
-Cada fila es un archivo de `tests/fixtures/estados/` importado de verdad contra una base en memoria. La tabla sale de un comando, y un test falla si esta página no coincide con él:
+Cada fila es un archivo de `tests/fixtures/estados/` (CSV o PDF) importado de verdad contra una base en memoria. La tabla sale de un comando, y un test falla si esta página no coincide con él:
 
 ```bash
 python scripts/estado_sintetico.py --tabla
@@ -357,6 +378,17 @@ python scripts/estado_sintetico.py --tabla
 | `monto_cero` | Un movimiento en cero | Rechazado | Línea 4: el monto es cero. |
 | `sin_movimientos` | Sin movimientos, pero con saldo final distinto del anterior | Rechazado | El estado no cuadra: saldo anterior 1000.00 + créditos 0.00 - débitos 0.00 = 1000.00, pero el saldo final es 1005.00 (diferencia 5.00). |
 | `continuidad` | Abril empieza con un saldo distinto del que cerró marzo | Rechazado | El estado #1 (2026-03-01 a 2026-03-31) cerró con 1714.73 y este empieza con 1713.73: hay -1.00 de diferencia entre los dos. |
+| `pichincha` | Estado que cuadra: resumen, una página de detalle y la última vacía | Entra | 17 movimientos |
+| `pichincha_doc_partido` | Tres N.DOC de nueve dígitos con el último dígito en la línea de abajo, como el real | Entra | 17 movimientos |
+| `pichincha_columna_desplazada` | El débito de una fila corrido 65 pt, dentro de la columna de crédito | Rechazado | Página 2, fila 5: la columna CREDITO trae dos textos y DEBITO ninguno: un texto quedó fuera de su columna. |
+| `pichincha_fila_entre_paginas` | Una fila con fecha y N.DOC al pie de una página y el resto arriba de la siguiente | Rechazado | Página 2, fila 10: falta DESCRIPCION, DEBITO, CREDITO y SALDO.<br>Página 3: hay texto arriba de la primera fila, sin fecha. |
+| `pichincha_separador_de_miles` | Un crédito con separador de miles ("1,200.00"); el resto cuadra | Rechazado | Página 2, fila 2: el CREDITO '1,200.00' no es válido: van solo dígitos y dos decimales con punto, sin separador de miles. |
+| `pichincha_pagina_repetida` | La página de detalle dos veces, con el mismo pie ("Página 2 de 3") | Rechazado | Las páginas no van de 1 a 4: el archivo trae 4 y sus pies dicen 1 de 3, 2 de 3, 2 de 3 y 3 de 3. |
+| `pichincha_resumen_no_cuadra` | El resumen cuenta un débito más de los que trae el detalle | Rechazado | El resumen dice 15 débitos por 302.05 y el detalle trae 14 por 302.05. |
+| `pichincha_corte_contado` | Movimientos en las dos fechas de corte, contados en el resumen | Entra | 19 movimientos |
+| `pichincha_corte_no_contado` | Los mismos movimientos de corte en el detalle, pero no en el resumen | Rechazado | El resumen dice 14 débitos por 302.05 y el detalle trae 16 por 317.05. |
+| `pichincha_cruza_diciembre` | Periodo de diciembre a enero: cada fecha cae en un solo año | Entra | 6 movimientos |
+| `pichincha_mes_fuera_del_periodo` | Periodo de diciembre a enero con una fecha "15-jun.", que no cae en ninguno de los dos | Rechazado | Página 2, fila 3: la fecha '15-jun.' no cae en el periodo 2026-12-14 a 2027-01-14. |
 <!-- tabla-casos:fin -->
 
 Los mensajes de los casos que no están en la tabla (codificación, CSV mal formado, columna repetida, descripción larga, cuenta que parece un número) están en `tests/test_ingesta.py`, también completos.
